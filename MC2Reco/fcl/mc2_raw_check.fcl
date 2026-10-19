@@ -1,0 +1,27 @@
+# MC2 raw-data check (module 1 of the run validation): integrity of the raw calorimeter data, read from the DTC fragments of the
+# art file before any reconstruction (Offline/MC2Reco/src/MC2RawCheck_module.cc). Histograms in the TFileService file (-T); the report is
+# made by Offline/MC2Reco/scripts/raw_check_report.py.
+# Usage (in the mc2reco muse area): mu2e -c Offline/MC2Reco/fcl/mc2_raw_check.fcl -S <list of raw.art files> -T raw_check_<run>.root
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+
+process_name : MC2RawCheck
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+
+physics : {
+   analyzers : {
+      rawCheck : {
+         module_type        : MC2RawCheck
+         windowMicroseconds : 100.     # length of one event window (time axis: ASSUMPTION)
+         sliceMinutes       : 10.      # time slices for the stability plots
+         nSlices            : 144      # up to 24 h
+         laserMinHits       : 1000     # an event with at least this many hits is a laser pulse
+         nPed               : 4        # samples for the pedestal
+         satADC             : 4090
+      }
+   }
+   ana       : [ rawCheck ]
+   end_paths : [ ana ]
+}
+services.scheduler.wantSummary : true

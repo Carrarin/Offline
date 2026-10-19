@@ -1,0 +1,5 @@
+<lcgdict>
+  <class name="mu2e::MC2CaloCosmicTrack"/>
+  <class name="std::vector<mu2e::MC2CaloCosmicTrack>"/>
+  <class name="art::Wrapper<std::vector<mu2e::MC2CaloCosmicTrack> >"/>
+</lcgdict>

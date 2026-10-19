@@ -1,0 +1,144 @@
+# MC2Reco prolog: modules for the MC2 calorimeter cosmic-ray reconstruction (see Offline/MC2Reco/README.md)
+BEGIN_PROLOG
+MC2Reco : {
+   # our template fit + per-SiPM time offsets; writes a CaloRecoDigiCollection like CaloRecoDigiMaker
+   MC2CaloRecoDigiMaker : {
+      module_type        : MC2CaloRecoDigiMaker
+      caloDigiCollection : CaloDigis
+      templateFile       : "Offline/MC2Reco/data/templates/splines_cosmic_r125328_v2.root"
+      fitLo              : -80.
+      fitHi              : -31.
+      maxPre             : 16
+      noise              : 3.6
+      timeOffsetFile     : ""          # per run: "Offline/MC2Reco/data/timecalib/<run>_sipm_tcorr.txt"
+      useCalCalibTimeOffset : false    # true: time offsets from the CalCalib conditions (CalTimeCalib table), not from timeOffsetFile
+      UseProtonBunchTime : false
+      diagLevel          : 0
+   }
+   # Offline CaloRecoDigiMaker with the leading-edge refit switched on (option already in Offline)
+   CaloRecoDigiMakerEdge : {
+      @table::CaloReco.CaloRecoDigiMaker
+      caloDigiCollection : CaloDigis
+      TemplateProcessor  : { @table::CaloReco.TemplateProcessor refitLeadingEdge : true }
+   }
+   MC2CaloRecoDigiDump : {
+      module_type            : MC2CaloRecoDigiDump
+      caloRecoDigiCollection : MC2CaloRecoDigiMaker
+   }
+   # tracker straight lines (KKLine) projected onto the calorimeter disks; matching calo hits in time and space (see the module header)
+   MC2TrkCaloProjection : {
+      module_type       : MC2TrkCaloProjection
+      kalSeedCollection : "KKLine"
+      caloHitCollection : "CaloHitMaker"
+      depthInCrystal    : 100.         # mm behind the crystal front face
+      diskZOffset       : [ 0., 0. ]   # mm added to the Offline z of disk 0 and disk 1
+      rIn               : 374.
+      rOut              : 660.
+      eMin              : 5.           # MeV
+      dtOffset          : 0.           # ns, t_calo - t_track
+      dtWindow          : 25.          # ns
+      diagLevel         : 0
+   }
+   # cosmic tracks in the calorimeter alone (algorithm of the mc2tools tagger), product MC2CaloCosmicTrackCollection
+   MC2CaloCosmicTrackFinder : {
+      module_type       : MC2CaloCosmicTrackFinder
+      caloHitCollection : "MC2CaloHitMaker"
+      requireBothSiPMs  : true
+      minSiPMAmp        : 150.      # ADC counts, each SiPM
+      maxGap            : 100.      # ns (wide: robust to residual board jumps; a cosmic track lasts a few ns)
+      minCrystals       : 4
+      min3DPerDisk      : 3
+      rms2D             : 20.       # mm
+      rms3D             : 40.       # mm
+      minLength         : 100.      # mm
+      depthInCrystal    : 100.      # mm
+      diskZOffset       : [ 0., 0. ]
+   }
+   # flat tree with the branches of the mc2tools tagger tracks.root
+   MC2CaloCosmicTrackDump : {
+      module_type     : MC2CaloCosmicTrackDump
+      trackCollection : "MC2CaloCosmicTrackFinder"
+   }
+   # our calibration machine: time offsets and energy scale per SiPM from the calorimeter cosmic tracks of the job, written as
+   # Offline condition tables (CalTimeCalib, CalEnergyCalib) like those of the calorimeter group (see the module header)
+   MC2CaloCalibFromTracks : {
+      module_type         : MC2CaloCalibFromTracks
+      caloTrackCollection : "MC2CaloCosmicTrackFinder"
+      kalSeedCollection   : ""          # "KKLine": calorimeter-tracker alignment check
+      depthInCrystal      : 100.
+      diskZOffset         : [ 0., 0. ]
+      nIterTime           : 40
+      nIterBeforeCut      : 10
+      outlierCut          : 5.          # ns
+      minEntriesTime      : 10
+      crystalSide         : 34.
+      minChordFrac        : 0.6
+      minEntriesEnergy    : 80
+      rMatchTracker       : 60.
+      timeTableFile       : "CalTimeCalib_mc2.txt"
+      energyTableFile     : "CalEnergyCalib_mc2.txt"
+      statsFile           : "calib_mc2_stats.csv"
+      caloRecoDigiCollection : "MC2CaloRecoDigiMaker"
+      nPed                : 4
+      thrMaxADC           : 400.
+      minPulsesThr        : 50
+      minEntriesPE        : 30
+      defaultLRU          : 0.05
+      simTableFile        : "CalSimCrystals_mc2.txt"
+      baselineTableFile   : "CalBaselines_mc2.txt"
+      responseFile        : "response_mc2.csv"
+   }
+   # stopped muons and delayed deposits (Michel), port of mc2tools cosmic_delayed_coincidence.C; Michel spectra per disk, lifetime fit
+   MC2StoppedMuons : {
+      module_type       : MC2StoppedMuons
+      caloHitCollection : "MC2CaloHitMaker"
+      minAmp            : 100.     # ADC, each SiPM
+      clusGap           : 30.      # ns
+      dtMin             : 0.1      # us
+      dtMax             : 20.      # us
+      tEdge             : 1.       # us
+      windowNs          : 97495.   # ns, event window (19499 samples)
+      dNear             : 80.      # mm
+      dFar              : 300.     # mm
+      michelDtMin       : 1.       # us
+      dtNorm            : 15.      # us
+      fitMin            : 1.       # us
+      fitMax            : 20.      # us
+      summaryFile       : "stopped_muons_summary.txt"
+   }
+   # mu- capture: second pulse in the STOP crystals vs THROUGH controls, matched filter on the residual, injection (see the module header)
+   MC2MuCapture : {
+      module_type         : MC2MuCapture
+      caloTrackCollection : "MC2CaloCosmicTrackFinder"
+      caloDigiCollection  : "CaloDigis"
+      caloHitCollection   : "MC2CaloHitMaker"
+      caloRecoDigiCollection : "MC2CaloRecoDigiMaker"
+      nbNear              : 80.      # mm, delayed deposits in the other crystals: ring 1
+      nbFarMin            : 250.     # mm, ring 2 (accidentals)
+      nbFarMax            : 400.
+      nbDtMin             : -1000.   # ns
+      nbDtMax             : 10000.   # ns
+      vetoDist            : 80.      # mm, mu+ veto
+      vetoMin             : 1000.    # ns
+      vetoMax             : 20000.   # ns
+      minCrystals         : 4
+      minThrough          : 6
+      maxThrough          : 400000
+      minSamples          : 16
+      minAmp              : 100.     # ADC
+      satADC              : 4090
+      xMax                : 1500.    # ns
+      nIterTemplate       : 2
+      dtMin               : 10.      # ns
+      noiseADC            : 3.75
+      tailStart           : 60.      # ns
+      injMaxDelay         : 600.     # ns
+      injMinA2            : 20.      # ADC
+      injMaxA2            : 400.     # ADC
+      seed                : 12345
+      nExamples           : 24       # example waveforms (STOP found x5, THROUGH found, STOP not found)
+      exampleS            : 5.
+      exampleA2           : 30.      # ADC
+   }
+}
+END_PROLOG

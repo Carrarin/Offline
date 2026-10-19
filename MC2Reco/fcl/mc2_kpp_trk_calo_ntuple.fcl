@@ -1,0 +1,57 @@
+# KPP combined run (tracker + calorimeter + CRV, extracted position, no field): EventNtuple from the tracker group's reco file.
+#   Input: rec.mu2e.cosmics.kpp00s000r001n000.<run>_000001.art (process MakeDaqNtuple: StrawHits, ComboHits, TimeClusters,
+#          KalSeeds "KKLine" = KinKal straight-line fits, CaloHits, CaloClusters, CRV digis, pulses, coincidences).
+#   Nothing is re-reconstructed: MergeKalSeeds only makes the KalSeedPtr collection that EventNtuple reads.
+#   Branches: trk (KinematicLine), trksegs/trksegpars_kl, trkhits, calohits, caloclusters, crvcoincs. No MC.
+# Usage: mu2e -c Offline/MC2Reco/fcl/mc2_kpp_trk_calo_ntuple.fcl -s <rec.art> -T <ntuple.root> [-n N]
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "EventNtuple/fcl/prolog.fcl"
+
+process_name : MC2KppNtuple
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+
+physics : {
+   producers : { MergeKKLine : @local::MergeKKLine }
+   analyzers : { nt : { @table::EventNtupleMaker } }
+   p1 : [ MergeKKLine ]
+   e1 : [ nt ]
+   trigger_paths : [ p1 ]
+   end_paths     : [ e1 ]
+}
+
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"
+
+physics.analyzers.nt.FitType : KinematicLine
+physics.analyzers.nt.hasTracks : false
+physics.analyzers.nt.hasCRV : false
+physics.analyzers.nt.RecoCountTag : ""
+physics.analyzers.nt.PBITag : ""
+physics.analyzers.nt.PBTTag : ""          # some events have no ProtonBunchTime
+physics.analyzers.nt.EWMTag : ""
+physics.analyzers.nt.EventHeaderTag : ""
+physics.analyzers.nt.FillTriggerInfo : false
+physics.analyzers.nt.mc.fill : false
+physics.analyzers.nt.lumistream.fill : false
+physics.analyzers.nt.subruns.makeNtuple : false
+physics.analyzers.nt.subruns.makeTotalsHistograms : false
+physics.analyzers.nt.subruns.genEventCount.include : false
+physics.analyzers.nt.subruns.cosmicLivetime.include : false
+physics.analyzers.nt.trk.fill : true
+physics.analyzers.nt.trk.fillHits : true
+physics.analyzers.nt.trk.fillTrkDtDt : false
+physics.analyzers.nt.trk.fillTrkPID : false
+physics.analyzers.nt.trk.mc.fill : false
+physics.analyzers.nt.trk.fits : [ { input : "MergeKKLine" branchname : "trk" fill : true
+                                    options : { fillMC : false fillHits : true genealogyDepth : -1 matchDepth : -1 }
+                                    trkQualLeaves : [ ] trkPIDTags : [ ] trkDtDtTag : "" } ]
+physics.analyzers.nt.calo : { fill : true fillClusters : true clustersTag : "CaloClusterMaker" fillHits : true hitsTag : "CaloHitMaker"
+                              fillRecoDigis : false recoDigisTag : "" fillDigis : false digisTag : ""
+                              mc : { fill : false fillTrackMatch : false fillClusters : false clusterMCTag : "" fillHits : false hitMCTag : ""
+                                     entrantTag : "" fillSim : false fillDigis : false fillDigiSim : false showerSimTag : "" } }
+physics.analyzers.nt.crv : { fill : true fillCoincs : true coincidencesTag : "CrvCoincidenceClusterFinder" recoPulsesTag : "CrvRecoPulses"
+                             stepsTag : "" fillPulses : false keepUnclusteredPulses : false fillDigis : false digisTag : "CrvDigi" planes : [ ]
+                             mc : { fill : false coincidenceMCsTag : "" digiMCsTag : "" assnsTag : "" } }
+services.scheduler.wantSummary : true
+services.scheduler.SkipEvent : [ "ProductNotFound" ]   # events without calo products (end of the merged calo data?) are skipped and counted

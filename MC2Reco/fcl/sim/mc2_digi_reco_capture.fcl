@@ -1,0 +1,7 @@
+# mc2_digi_reco.fcl + the mu- capture search of the data (MC2MuCapture, on the simulated CaloDigis) + the truth of the stopped muons
+# (MC2StopTruth), in the same job, so that every capture candidate can be matched to what happened.
+#include "Offline/MC2Reco/fcl/sim/mc2_digi_reco.fcl"
+physics.analyzers.capture : { @table::MC2Reco.MC2MuCapture caloDigiCollection : "MC2CaloDigiMaker" }
+physics.analyzers.truth   : { module_type : MC2StopTruth }
+physics.ana : [ dump, stopped, capture, truth ]
+physics.end_paths : [ ana ]

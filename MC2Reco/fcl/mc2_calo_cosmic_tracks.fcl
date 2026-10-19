@@ -1,0 +1,33 @@
+# Cosmic tracks in the calorimeter alone, from the raw data:
+#   CaloDigis (Offline decoder) -> MC2CaloRecoDigiMaker (MC2 template fit, per-SiPM time offsets timeOffsetFile)
+#   -> MC2CaloHitMaker (Offline CaloHitMaker) -> MC2CaloCosmicTrackFinder -> MC2CaloCosmicTrackDump (tree "tracks" with the
+#   branches of the mc2tools tagger tracks.root) ; art output with the hits and the tracks (optional, see outputs).
+# Per run: physics.producers.MC2CaloRecoDigiMaker.timeOffsetFile : "Offline/MC2Reco/data/timecalib/<run>_sipm_tcorr*.txt"
+# Usage: mu2e -c Offline/MC2Reco/fcl/mc2_calo_cosmic_tracks.fcl -S <raw list> -T calo_tracks_<run>.root [-o calo_tracks_<run>.art]
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/DAQ/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+process_name : MC2CaloTracks
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+physics : {
+   producers : {
+      CaloDigis                : { @table::DAQ.producers.CaloDigis }
+      MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker }
+      MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker }
+      MC2CaloCosmicTrackFinder : { @table::MC2Reco.MC2CaloCosmicTrackFinder }
+   }
+   analyzers : { dump : { @table::MC2Reco.MC2CaloCosmicTrackDump } }
+   reco : [ CaloDigis, MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloCosmicTrackFinder ]
+   ana  : [ dump ]
+   trigger_paths : [ reco ]
+   end_paths     : [ ana ]
+}
+outputs : {
+   out : { module_type : RootOutput  fileName : "calo_tracks.art"
+           outputCommands : [ "drop *_*_*_*", "keep mu2e::CaloHits_*_*_*", "keep mu2e::CaloRecoDigis_*_*_*", "keep mu2e::MC2CaloCosmicTracks_*_*_*", "keep art::*_*_*_*" ] }
+}
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"   # same frame as the CRV/tracker chains
+services.scheduler.wantSummary : true

@@ -1,0 +1,72 @@
+# MC2 runs with the CRV (KPP extracted position): calorimeter + CRV reconstruction and EventNtuple with both.
+#   Calorimeter: CaloDigis (Offline decoder) -> Offline CaloRecoDigiMaker -> CaloHitMaker -> proto clusters -> clusters
+#   CRV:         CrvDigi (Offline decoder CrvDigisFromArtdaqFragmentsFEBII) -> CrvRecoPulses -> CrvCoincidenceClusterFinder
+#                (sector settings of CRVReco/fcl/epilog_extracted_v04.fcl)
+#   CRV conditions from the Offline text files of 16/08/2026 (status, SiPM calibration, time offsets), no database.
+#   Geometry: Offline extracted (geom_common_extracted.txt -> _v04).
+#   EventNtuple: calo digis-reco digis-hits-clusters, CRV coincidences + pulses (also unclustered) + digis; no MC, no tracks.
+# Usage: mu2e -c Offline/MC2Reco/fcl/mc2_crv_calo_ntuple.fcl -s <raw.art> -T <ntuple.root> [-n N]
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/DAQ/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/CaloCluster/fcl/prolog.fcl"
+#include "Offline/CRVReco/fcl/prolog.fcl"
+#include "EventNtuple/fcl/prolog.fcl"
+
+process_name : MC2CrvCalo
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+
+physics : {
+   producers : {
+      CaloDigis             : { @table::DAQ.producers.CaloDigis }
+      CaloRecoDigiMaker     : { @table::CaloReco.CaloRecoDigiMaker caloDigiCollection : CaloDigis UseProtonBunchTime : false }
+      CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : CaloRecoDigiMaker }
+      CaloProtoClusterMaker : { @table::CaloCluster.CaloProtoClusterMaker caloHitCollection : CaloHitMaker }
+      CaloClusterMaker      : { @table::CaloCluster.CaloClusterMaker }
+      CrvDigi               : { module_type : CrvDigisFromArtdaqFragmentsFEBII  diagLevel : 0 }
+      CrvRecoPulses               : @local::CrvRecoPulses
+      CrvCoincidenceClusterFinder : @local::CrvCoincidenceClusterFinder
+   }
+   analyzers : { nt : { @table::EventNtupleMaker } }
+   reco : [ CaloDigis, CaloRecoDigiMaker, CaloHitMaker, CaloProtoClusterMaker, CaloClusterMaker,
+            CrvDigi, CrvRecoPulses, CrvCoincidenceClusterFinder ]
+   ana  : [ nt ]
+   trigger_paths : [ reco ]
+   end_paths     : [ ana ]
+}
+
+#include "Offline/CRVReco/fcl/epilog_extracted.fcl"
+
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"
+services.ProditionsService.crvStatus.useDb : true
+services.ProditionsService.crvCalib.useDb  : true
+services.DbService.textFile : [ "Offline/CRVConditions/data/status_extracted_20260816.txt",
+                                "Offline/CRVConditions/data/calibSiPM_extracted_20260816.txt",
+                                "Offline/CRVConditions/data/calibTime_extracted_20260816.txt" ]
+
+# EventNtuple: real data, calorimeter + CRV only
+physics.analyzers.nt.hasTracks : false
+physics.analyzers.nt.hasCRV : false
+physics.analyzers.nt.RecoCountTag : ""
+physics.analyzers.nt.PBITag : ""
+physics.analyzers.nt.PBTTag : ""
+physics.analyzers.nt.EWMTag : ""
+physics.analyzers.nt.EventHeaderTag : ""
+physics.analyzers.nt.FillTriggerInfo : false
+physics.analyzers.nt.mc.fill : false
+physics.analyzers.nt.trk.fill : false
+physics.analyzers.nt.lumistream.fill : false
+physics.analyzers.nt.subruns.makeNtuple : false
+physics.analyzers.nt.subruns.makeTotalsHistograms : false
+physics.analyzers.nt.subruns.genEventCount.include : false
+physics.analyzers.nt.subruns.cosmicLivetime.include : false
+physics.analyzers.nt.calo : { fill : true fillClusters : true clustersTag : "CaloClusterMaker" fillHits : true hitsTag : "CaloHitMaker"
+                              fillRecoDigis : true recoDigisTag : "CaloRecoDigiMaker" fillDigis : false digisTag : "CaloDigis"
+                              mc : { fill : false fillTrackMatch : false fillClusters : false clusterMCTag : "" fillHits : false hitMCTag : ""
+                                     entrantTag : "" fillSim : false fillDigis : false fillDigiSim : false showerSimTag : "" } }
+physics.analyzers.nt.crv : { fill : true fillCoincs : true coincidencesTag : "CrvCoincidenceClusterFinder" recoPulsesTag : "CrvRecoPulses"
+                             stepsTag : "" fillPulses : true keepUnclusteredPulses : true fillDigis : false digisTag : "CrvDigi" planes : [ ]
+                             mc : { fill : false coincidenceMCsTag : "" digiMCsTag : "" assnsTag : "" } }
+services.scheduler.wantSummary : true

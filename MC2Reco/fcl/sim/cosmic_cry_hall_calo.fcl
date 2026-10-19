@@ -1,0 +1,10 @@
+# Cosmic CRY muons through the Mu2e hall (geometry geom_cosmic_extracted, Offline Mu2eG4) into the calorimeter in the
+# garage position; events kept if they leave steps in the calorimeter. Run with muse setup SimJob (Offline v13_39_00 +
+# its Production) and MU2E_SEARCH_PATH including the mc2reco area (for Offline/MC2Reco/fcl/sim/caloCRYconfig.txt).
+# Cost measured 19/10/2026: ~55 s CPU per second of cosmic livetime, 2 GB per job.
+#include "Production/JobConfig/cosmic/ExtractedCRY.fcl"
+physics.producers.generate.inputFile : "Offline/MC2Reco/fcl/sim/caloCRYconfig.txt"
+physics.filters.PrimaryFilter.StrawGasSteps : [ ]
+physics.filters.PrimaryFilter.CrvSteps : [ ]
+services.scheduler.num_threads : 1
+services.scheduler.num_schedules : 1

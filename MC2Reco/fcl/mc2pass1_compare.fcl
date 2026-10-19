@@ -1,0 +1,38 @@
+# MC2 pass1 comparison job on raw calorimeter data:
+#   CaloDigis (Offline decoder) -> three reconstructions of the same digis:
+#     CaloRecoDigiMaker      Offline, as in the pass1 (template CsI-waveform-2020-02-12, fit of the whole waveform)
+#     CaloRecoDigiMakerEdge  Offline with refitLeadingEdge : true
+#     MC2CaloRecoDigiMaker   MC2 template fit (v2 cosmic template, window [-80,-31] ns) + per-SiPM offsets
+#   -> CaloHitMaker for each, and a flat tree of each CaloRecoDigi collection for the MC2 timing checks (TFileService).
+# Usage (in the mc2reco muse area): mu2e -c Offline/MC2Reco/fcl/mc2pass1_compare.fcl -s <raw.art> -T <out.root> [-n N]
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/DAQ/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+
+process_name : MC2Pass1Compare
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+
+physics : {
+   producers : {
+      CaloDigis             : { @table::DAQ.producers.CaloDigis }
+      CaloRecoDigiMaker     : { @table::CaloReco.CaloRecoDigiMaker caloDigiCollection : CaloDigis UseProtonBunchTime : false }
+      CaloRecoDigiMakerEdge : { @table::MC2Reco.CaloRecoDigiMakerEdge UseProtonBunchTime : false }
+      MC2CaloRecoDigiMaker  : { @table::MC2Reco.MC2CaloRecoDigiMaker }
+      CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : CaloRecoDigiMaker }
+      CaloHitMakerEdge      : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : CaloRecoDigiMakerEdge }
+      MC2CaloHitMaker       : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker }
+   }
+   analyzers : {
+      dumpOffline : { @table::MC2Reco.MC2CaloRecoDigiDump caloRecoDigiCollection : CaloRecoDigiMaker     treeName : "offline" }
+      dumpEdge    : { @table::MC2Reco.MC2CaloRecoDigiDump caloRecoDigiCollection : CaloRecoDigiMakerEdge treeName : "edge" }
+      dumpMC2     : { @table::MC2Reco.MC2CaloRecoDigiDump caloRecoDigiCollection : MC2CaloRecoDigiMaker  treeName : "mc2" }
+   }
+   reco    : [ CaloDigis, CaloRecoDigiMaker, CaloRecoDigiMakerEdge, MC2CaloRecoDigiMaker, CaloHitMaker, CaloHitMakerEdge, MC2CaloHitMaker ]
+   ana     : [ dumpOffline, dumpEdge, dumpMC2 ]
+   trigger_paths : [ reco ]
+   end_paths     : [ ana ]
+}
+services.scheduler.wantSummary : true

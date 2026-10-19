@@ -1,0 +1,64 @@
+#!/usr/bin/env python
+#
+# MC2Reco: MC2 calorimeter reconstruction modules, built by muse on top of an Offline release (backing).
+#
+import os
+Import('env')
+Import('mu2e_helper')
+
+helper = mu2e_helper(env)
+rootlibs = env['ROOTLIBS']
+
+# art-free fit library (also used by the standalone test in Offline/MC2Reco/test)
+mainlib = helper.make_mainlib([ rootlibs ])
+
+helper.make_plugins([ mainlib,
+                      'mu2e_CaloConditions',
+                      'mu2e_DAQConditions',
+                      'mu2e_RecoDataProducts',
+                      'mu2e_DataProducts',
+                      'mu2e_ConfigTools',
+                      'mu2e_DbTables',
+                      'mu2e_DbService',
+                      'mu2e_ProditionsService',
+                      'mu2e_GeneralUtilities',
+                      'mu2e_GeometryService',
+                      'mu2e_Mu2eUtilities',
+                      'mu2e_MCDataProducts',
+                      'mu2e_SeedService',
+                      'art_Framework_Services_Optional_RandomNumberGenerator',
+                      'CLHEP',
+                      'mu2e_CalorimeterGeom',
+                      'KinKal_Trajectory',
+                      'KinKal_General',
+                      'mu2e_DAQ',
+                      'artdaq-core-mu2e_Overlays',
+                      'artdaq-core_Data',
+                      'artdaq-core-mu2e_Data',
+                      'artdaq-core-mu2e_Data_dict',
+                      'MF_MessageLogger',
+                      'art_Framework_Core',
+                      'art_Framework_Principal',
+                      'art_Framework_Services_Registry',
+                      'art_root_io_tfile_support',
+                      'art_root_io_TFileService',
+                      'art_Persistency_Common',
+                      'art_Persistency_Provenance',
+                      'art_Utilities',
+                      'canvas',
+                      'fhiclcpp',
+                      'fhiclcpp_types',
+                      'tbb',
+                      'cetlib',
+                      'cetlib_except',
+                      'boost_filesystem',
+                      rootlibs ])
+
+
+# dictionaries of the MC2Reco data products (classes.h, classes_def.xml)
+helper.make_dict_and_map([ 'mu2e_RecoDataProducts', 'art_Persistency_Common', 'art_Persistency_Provenance', 'art_Utilities',
+                           'canvas', 'cetlib', 'cetlib_except', rootlibs ])
+
+# Local Variables:
+# mode:python
+# End:

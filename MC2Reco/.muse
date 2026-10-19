@@ -1,0 +1,2 @@
+# add Offline/MC2Reco/bin to path
+PATH bin

@@ -1,0 +1,41 @@
+# The calorimeter machine on raw calorimeter data (calorimeter only):
+#   CaloDigis (Offline decoder) -> MC2CaloRecoDigiMaker (our template; constants from the CalCalib conditions)
+#   -> MC2CaloHitMaker -> MC2CaloCosmicTrackFinder -> analyzers:
+#      dump    MC2CaloCosmicTrackDump   (tracks, mc2tools tagger format)
+#      calib   MC2CaloCalibFromTracks   (our tables: CalTimeCalib, CalEnergyCalib, CalSimCrystals, CalBaselines, response csv)
+#      stopped MC2StoppedMuons          (delayed deposits, Michel spectra per disk, lifetime)
+#      capture MC2MuCapture             (mu- capture: second pulse in the stopping crystal)
+# Passes (driver: set the overrides at the bottom of a per-pass fcl):
+#   pass 0: no tables (CalCalib defaults: one ADC2MeV for all, time offsets 0); finder.maxGap very large (all crystals of the event
+#           in one cluster) -> calib -> tables 0
+#   pass 1: tables 0 as conditions (DbService.textFile, calCalib.useDb, useCalCalibTimeOffset), normal finder -> tables 1 + physics
+#   pass 2: tables 1 -> verification (corrections ~ 0)
+# Usage: mu2e -c <pass fcl> -S <raw list> -T <out.root>
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/DAQ/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+process_name : MC2CaloMachine
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+physics : {
+   producers : {
+      CaloDigis                : { @table::DAQ.producers.CaloDigis }
+      MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker useCalCalibTimeOffset : true }
+      MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker time4Merge : 50. }   # L/R merged within 50 ns (robust to jumps)
+      MC2CaloCosmicTrackFinder : { @table::MC2Reco.MC2CaloCosmicTrackFinder }
+   }
+   analyzers : {
+      dump    : { @table::MC2Reco.MC2CaloCosmicTrackDump }
+      calib   : { @table::MC2Reco.MC2CaloCalibFromTracks }
+      stopped : { @table::MC2Reco.MC2StoppedMuons }
+      capture : { @table::MC2Reco.MC2MuCapture }
+   }
+   reco : [ CaloDigis, MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloCosmicTrackFinder ]
+   ana  : [ dump, calib, stopped, capture ]
+   trigger_paths : [ reco ]
+   end_paths     : [ ana ]
+}
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"
+services.scheduler.wantSummary : true

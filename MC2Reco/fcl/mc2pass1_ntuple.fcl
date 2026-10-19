@@ -1,0 +1,76 @@
+# MC2 pass1 with EventNtuple, on raw calorimeter data.
+#   CaloDigis (Offline decoder)
+#   Offline reconstruction:  CaloRecoDigiMaker -> CaloHitMaker -> CaloProtoClusterMaker -> CaloClusterMaker
+#   MC2 reconstruction:      MC2CaloRecoDigiMaker (MC2 template fit + per-SiPM offsets) -> MC2CaloHitMaker
+#                            -> MC2CaloProtoClusterMaker -> MC2CaloClusterMaker
+#   EventNtuple for each (calorimeter branches only: digis, reco digis, hits, clusters; no tracker, CRV, MC)
+#   art output with the reco digis, hits and clusters of both (no waveforms)
+# Usage: mu2e -c Offline/MC2Reco/fcl/mc2pass1_ntuple.fcl -s <raw.art> -T <ntuple.root> -o <reco.art> [-n N]
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/DAQ/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/CaloCluster/fcl/prolog.fcl"
+#include "EventNtuple/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+
+process_name : MC2Pass1
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+
+physics : {
+   producers : {
+      CaloDigis                : { @table::DAQ.producers.CaloDigis }
+      CaloRecoDigiMaker        : { @table::CaloReco.CaloRecoDigiMaker caloDigiCollection : CaloDigis UseProtonBunchTime : false }
+      CaloHitMaker             : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : CaloRecoDigiMaker }
+      CaloProtoClusterMaker    : { @table::CaloCluster.CaloProtoClusterMaker caloHitCollection : CaloHitMaker }
+      CaloClusterMaker         : { @table::CaloCluster.CaloClusterMaker }
+      MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker }
+      MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker }
+      MC2CaloProtoClusterMaker : { @table::CaloCluster.CaloProtoClusterMaker caloHitCollection : MC2CaloHitMaker }
+      MC2CaloClusterMaker      : { @table::CaloCluster.CaloClusterMaker caloClusterMainCollection : "MC2CaloProtoClusterMaker:main"
+                                                                        caloClusterSplitCollection : "MC2CaloProtoClusterMaker:split" }
+   }
+   analyzers : {
+      ntOffline : { @table::EventNtupleMaker }
+      ntMC2     : { @table::EventNtupleMaker }
+   }
+   reco    : [ CaloDigis,
+               CaloRecoDigiMaker, CaloHitMaker, CaloProtoClusterMaker, CaloClusterMaker,
+               MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloProtoClusterMaker, MC2CaloClusterMaker ]
+   ana     : [ ntOffline, ntMC2, out ]
+   trigger_paths : [ reco ]
+   end_paths     : [ ana ]
+}
+
+outputs : {
+   out : { module_type : RootOutput  fileName : "mc2pass1.art"
+           outputCommands : [ "drop *_*_*_*", "keep mu2e::CaloRecoDigis_*_*_*", "keep mu2e::CaloHits_*_*_*", "keep mu2e::CaloClusters_*_*_*",
+                              "keep mu2e::CaloProtoClusters_*_*_*", "keep art::*_*_*_*" ] }
+}
+
+# EventNtuple: calorimeter only, real data (no MC, no trigger, no proton bunch, no event header)
+physics.analyzers.ntOffline.hasTracks : false
+physics.analyzers.ntOffline.RecoCountTag : ""
+physics.analyzers.ntOffline.PBITag : ""
+physics.analyzers.ntOffline.PBTTag : ""
+physics.analyzers.ntOffline.EWMTag : ""
+physics.analyzers.ntOffline.EventHeaderTag : ""
+physics.analyzers.ntOffline.FillTriggerInfo : false
+physics.analyzers.ntOffline.mc.fill : false
+physics.analyzers.ntOffline.trk.fill : false
+physics.analyzers.ntOffline.crv.fill : false
+physics.analyzers.ntOffline.lumistream.fill : false
+physics.analyzers.ntOffline.subruns.makeNtuple : false
+physics.analyzers.ntOffline.subruns.makeTotalsHistograms : false
+physics.analyzers.ntOffline.subruns.genEventCount.include : false
+physics.analyzers.ntOffline.subruns.cosmicLivetime.include : false
+physics.analyzers.ntOffline.calo : { fill : true fillClusters : true clustersTag : "CaloClusterMaker" fillHits : true hitsTag : "CaloHitMaker"
+                                     fillRecoDigis : true recoDigisTag : "CaloRecoDigiMaker" fillDigis : false digisTag : "CaloDigis"
+                                     mc : { fill : false fillTrackMatch : false fillClusters : false clusterMCTag : "" fillHits : false hitMCTag : ""
+                                            entrantTag : "" fillSim : false fillDigis : false fillDigiSim : false showerSimTag : "" } }
+physics.analyzers.ntMC2 : @local::physics.analyzers.ntOffline
+physics.analyzers.ntMC2.calo.clustersTag : "MC2CaloClusterMaker"
+physics.analyzers.ntMC2.calo.hitsTag : "MC2CaloHitMaker"
+physics.analyzers.ntMC2.calo.recoDigisTag : "MC2CaloRecoDigiMaker"
+services.scheduler.wantSummary : true

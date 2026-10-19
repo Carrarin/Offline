@@ -1,0 +1,52 @@
+# Digitization of the Mu2eG4 cosmics in the hall (Offline/MC2Reco/fcl/sim/cosmic_cry_hall_calo.fcl) with the measured response of the MC2
+# calorimeter, then the same reconstruction and analyzers as the data (the calorimeter machine):
+#   EWMProducer (off spill: one 100 us window) -> CaloShowerROMaker (Offline: photoelectrons, Birks, propagation time)
+#   -> CaloDigiMaker (Offline, with the threshold per SiPM of thresholdFile) -> MC2CaloRecoDigiMaker -> MC2CaloHitMaker -> MC2CaloCosmicTrackFinder
+#   -> dump (tracks), stopped (stopped muons, Michel, lifetime)
+# Response (Offline/MC2Reco/scripts/make_sim_inputs.py, run 125329, no input from the Michel spectrum):
+#   CalSimParams   ADCPerMeV per SiPM from the MIP calibration, pePerMeV = ADCPerMeV / p0 of the laser (125328), LRU 0
+#   thresholds     per SiPM, 0.5 % percentile of the hit amplitude (book chapter 10)
+#   pulse          cosmic template v2 (125328), the same the reconstruction fits
+#   noise          Offline default (ReadoutNoise.root, one shape scaled by the ADC per photoelectron of each SiPM): to be checked
+#   reconstruction CalEnergyCalib = 1/ADCPerMeV of the simulation, time offsets 0
+# Usage (muse setup of the mc2reco area): mu2e -c Offline/MC2Reco/fcl/sim/mc2_digi_reco.fcl -s <dts.art> -T <out.root>
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CaloMC/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+
+process_name : MC2DigiReco
+source   : { module_type : RootInput }
+services : @local::Services.SimAndReco
+physics : {
+   producers : {
+      EWMProducer              : { module_type : EventWindowMarkerProducer  SpillType : 0  RecoFromMCTruth : false }
+      CaloShowerROMaker        : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : [ "compressDetStepMCs" ] }   # steps as saved by the Primary job
+      MC2CaloDigiMaker         : { @table::CaloMC.CaloDigiMaker
+                                   pulseCache    : { @table::CaloMC.CaloDigiMaker.pulseCache fileName : "Offline/MC2Reco/data/sim/pulse_cosmic_r125328_v2.root" }
+                                   thresholdFile : "Offline/MC2Reco/data/sim/sim_thresholds_r125329.csv"
+                                   thresholdColumn : "thrRaw_adc" }   # Offline CaloDigiMaker, threshold per SiPM
+      MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker caloDigiCollection : MC2CaloDigiMaker useCalCalibTimeOffset : true }
+      MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker time4Merge : 50. }
+      MC2CaloCosmicTrackFinder : { @table::MC2Reco.MC2CaloCosmicTrackFinder }
+   }
+   analyzers : {
+      dump    : { @table::MC2Reco.MC2CaloCosmicTrackDump }
+      stopped : { @table::MC2Reco.MC2StoppedMuons }
+   }
+   reco : [ EWMProducer, CaloShowerROMaker, MC2CaloDigiMaker, MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloCosmicTrackFinder ]
+   ana  : [ dump, stopped ]
+   trigger_paths : [ reco ]
+   end_paths     : [ ana ]
+}
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_field.txt"
+services.ProditionsService.calSimParams.fileName : "Offline/MC2Reco/data/sim/CalSimCrystals_r125329_laser_fcl.txt"
+services.ProditionsService.calSimParams.useDb : false
+services.ProditionsService.calCalib.useDb : true
+services.DbService.textFile : [ "Offline/MC2Reco/data/sim/CalEnergyCalib_r125329_sim.txt", "Offline/MC2Reco/data/sim/CalTimeCalib_zero.txt" ]
+services.SeedService.baseSeed : 8100
+services.scheduler.wantSummary : true
+physics.analyzers.stopped.summaryFile : "stopped_sim.txt"

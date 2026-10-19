@@ -1,0 +1,44 @@
+# Combined run (tracker + calorimeter + CRV): OUR calorimeter reconstruction from the raw fragments, the tracker tracks of the
+# tracker group's reco file, and the projection of the tracks onto the calorimeter.
+#   primary input   : the reco file with the KalSeeds (KKLine) of the tracker group (rec.mu2e.cosmics.kpp*.art)
+#   secondary input : the raw file it was made from (raw.mu2e.cosmics.kpp*.art), which carries the calorimeter DTC fragments
+#   calorimeter     : CaloDigis (Offline decoder) -> MC2CaloRecoDigiMaker (MC2 fit, our per-SiPM offsets) -> MC2CaloHitMaker
+#                     -> MC2CaloCosmicTrackFinder ; the CaloHits of the tracker group's file are NOT used
+#   comparisons     : MC2TrkCaloProjection (tracker lines -> our calo hits), MC2CaloCosmicTrackDump
+#   stopped muons   : MC2StoppedMuons (delayed deposits, Michel spectra per disk, lifetime)
+#   calibration     : MC2CaloCalibFromTracks (our CalTimeCalib / CalEnergyCalib tables from the calo tracks; tracker alignment check)
+# Per run: the starting calibration tables (DbService.textFile + calCalib.useDb + MC2CaloRecoDigiMaker.useCalCalibTimeOffset),
+#          diskZOffset of projection, finder and calib (set-up geometry).
+# Usage: mu2e -c Offline/MC2Reco/fcl/mc2_kpp_calo_trk.fcl -T kpp_calo_trk_<run>.root   (file names below, or with an override fcl)
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/DAQ/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+process_name : MC2KppCaloTrk
+source   : { module_type : RootInput
+             fileNames : [ "data/kpp123680/rec.mu2e.cosmics.kpp00s000r001n000.123680_000001.art" ]
+             secondaryFileNames : [ { a : "data/kpp123680/rec.mu2e.cosmics.kpp00s000r001n000.123680_000001.art"
+                                      b : [ "data/kpp123680/raw.mu2e.cosmics.kpp.123680_000001.art" ] } ] }
+services : @local::Services.Reco
+physics : {
+   producers : {
+      CaloDigis                : { @table::DAQ.producers.CaloDigis }
+      MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker }
+      MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker }
+      MC2CaloCosmicTrackFinder : { @table::MC2Reco.MC2CaloCosmicTrackFinder }
+   }
+   analyzers : {
+      trkCalo  : { @table::MC2Reco.MC2TrkCaloProjection caloHitCollection : "MC2CaloHitMaker" }
+      dump     : { @table::MC2Reco.MC2CaloCosmicTrackDump }
+      calib    : { @table::MC2Reco.MC2CaloCalibFromTracks kalSeedCollection : "KKLine" }
+      stopped  : { @table::MC2Reco.MC2StoppedMuons }
+   }
+   reco : [ CaloDigis, MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloCosmicTrackFinder ]
+   ana  : [ trkCalo, dump, calib, stopped ]
+   trigger_paths : [ reco ]
+   end_paths     : [ ana ]
+}
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"
+services.scheduler.SkipEvent : [ "ProductNotFound" ]
+services.scheduler.wantSummary : true

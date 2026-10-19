@@ -1,0 +1,4 @@
+# mc2_digi_reco_capture.fcl + all the calorimeter hits of every event (MC2EventHits) for the event displays of the topologies.
+#include "Offline/MC2Reco/fcl/sim/mc2_digi_reco_capture.fcl"
+physics.analyzers.hits : { module_type : MC2EventHits  maxEvents : 100000000 }
+physics.ana : [ dump, stopped, capture, truth, hits ]

@@ -1,0 +1,14 @@
+# Truth of the muons stopped in the crystals (MC2StopTruth) on the Mu2eG4 hall production (dts files of cosmic_cry_hall_calo.fcl).
+# Usage: mu2e -c Offline/MC2Reco/fcl/sim/mc2_stop_truth.fcl -s <dts.art> -T <out.root>
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+process_name : MC2StopTruth
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+physics : {
+   analyzers : { truth : { module_type : MC2StopTruth } }
+   ana : [ truth ]
+   end_paths : [ ana ]
+}
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_field.txt"

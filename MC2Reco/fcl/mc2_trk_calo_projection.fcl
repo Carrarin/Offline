@@ -1,0 +1,19 @@
+# Tracker straight-line tracks (KalSeeds "KKLine") projected onto the calorimeter: MC2TrkCaloProjection on a file that already
+# contains KalSeeds and CaloHits (e.g. the tracker group's rec.mu2e.cosmics.kpp*.art, or the output of mc2_kpp_reco.fcl).
+#   diskZOffset: shift of each disk with respect to the Offline geometry (for a set-up that differs from it), mm.
+# Usage: mu2e -c Offline/MC2Reco/fcl/mc2_trk_calo_projection.fcl -s <file.art> -T trk_calo_<run>.root
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+process_name : MC2TrkCalo
+source   : { module_type : RootInput }
+services : @local::Services.Reco
+physics : {
+   analyzers : { trkCalo : { @table::MC2Reco.MC2TrkCaloProjection } }
+   e1 : [ trkCalo ]
+   end_paths : [ e1 ]
+}
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted.txt"
+services.scheduler.SkipEvent : [ "ProductNotFound" ]   # events without KalSeeds or CaloHits are skipped (and counted by art)
+services.scheduler.wantSummary : true
