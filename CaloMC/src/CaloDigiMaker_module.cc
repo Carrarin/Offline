@@ -2,6 +2,8 @@
 // Simulate the readout waveform for each sensors from CaloShowerROs.
 // Individual photo-electrons are generated for each readout, including photo-statistic fluctuations
 // Simulate digitization procedure and produce CaloDigis.
+// Digitization threshold: minPeakADC for all SiPMs, or one value per SiPM from thresholdFile (csv with a header row, column "roid" =
+// offline SiPM id and column thresholdColumn, ADC above the pedestal); SiPMs missing from the file keep minPeakADC.
 //
 //
 #include "art/Framework/Core/EDProducer.h"
@@ -12,6 +14,7 @@
 #include "fhiclcpp/types/Table.h"
 
 #include "Offline/CalorimeterGeom/inc/Calorimeter.hh"
+#include "Offline/ConfigTools/inc/ConfigFileLookupPolicy.hh"
 #include "Offline/CaloConditions/inc/CalSimParams.hh"
 #include "Offline/DataProducts/inc/CaloConst.hh"
 #include "Offline/DataProducts/inc/CaloSiPMId.hh"
@@ -27,6 +30,9 @@
 #include "Offline/SeedService/inc/SeedService.hh"
 
 #include "CLHEP/Vector/ThreeVector.h"
+#include <fstream>
+#include <sstream>
+#include <string>
 #include "CLHEP/Random/RandPoissonQ.h"
 #include "CLHEP/Random/RandGaussQ.h"
 #include "CLHEP/Random/RandFlat.h"
@@ -62,6 +68,8 @@ namespace mu2e {
              fhicl::Atom<int>           minPeakADC           { Name("minPeakADC"),             Comment("Minimum ADC hits of local peak to digitize") };
              fhicl::Atom<float>         minNoiseAmp          { Name("minNoiseAmp"),            Comment("Minimum noise amplitude to add noise") };
              fhicl::Atom<unsigned>      bufferDigi           { Name("bufferDigi"),             Comment("Number of timeStamps for the buffer digi") };
+             fhicl::Atom<std::string>   thresholdFile        { Name("thresholdFile"),          Comment("csv with roid and the threshold per SiPM [ADC]; empty: minPeakADC for all"), "" };
+             fhicl::Atom<std::string>   thresholdColumn      { Name("thresholdColumn"),        Comment("column of thresholdFile with the threshold"), "threshold_adc" };
              fhicl::Atom<int>           diagLevel            { Name("diagLevel"),              Comment("Diag Level"),0 };
          };
 
@@ -88,6 +96,7 @@ namespace mu2e {
              consumes<ProtonBunchTimeMC>(pbtmcTag_);
 
              produces<CaloDigiCollection>();
+             readThresholds(config().thresholdFile(), config().thresholdColumn());
 
              //check that StartTimeBuffer is shorter than BlindTime_
              if (startTimeBuffer_ > digitizationStart_) throw cet::exception("CALODIGIMAKER")
@@ -104,7 +113,9 @@ namespace mu2e {
        bool   fillROHits        (unsigned iRO, std::vector<double>& waveform, const CaloShowerROCollection&, const ProtonBunchTimeMC&, const CalSimParams&);
        void   addWFNoise        (std::vector<double>& waveform, int noiseWFID);
        void   buildOutputDigi   (unsigned iRO, std::vector<double>& waveform, double pedestal, CaloDigiCollection&);
-       void   extract           (const std::vector<int>& wf, std::vector<size_t>& starts, std::vector<size_t>& stops) const;
+       void   extract           (const std::vector<int>& wf, std::vector<size_t>& starts, std::vector<size_t>& stops, int thr) const;
+       void   readThresholds    (const std::string& file, const std::string& column);
+       int    threshold         (unsigned iRO) const { return iRO < thr_.size() && thr_[iRO] > 0 ? thr_[iRO] : minPeakADC_; }
        double readoutScaleFactor(unsigned iRO, const CalSimParams& conds) const;
        void   diag0             (unsigned, const std::vector<int>&);
        void   diag1             (unsigned, double, size_t, const std::vector<int>&, int);
@@ -122,6 +133,7 @@ namespace mu2e {
        CaloPulseUtil           pulseCache_;
        unsigned                nBinsPeak_;
        int                     minPeakADC_;
+       std::vector<int>        thr_;
        float                   minNoiseAmp_;
        CLHEP::HepRandomEngine& engine_;
        bool                    addNoise_;
@@ -291,7 +303,7 @@ namespace mu2e {
        //extract hits start / stop times
        std::vector<size_t> hitStarts, hitStops;
        hitStarts.reserve(16);hitStops.reserve(16);
-       extract(wf,hitStarts,hitStops);
+       extract(wf,hitStarts,hitStops,threshold(iRO));
 
        // Build digi for concatenated hits
        for (size_t ihit=0;ihit<hitStarts.size();++ihit) {
@@ -319,12 +331,12 @@ namespace mu2e {
 
 
   //-------------------------------------------------------------------------------------------------------------------
-  void CaloDigiMaker::extract(const std::vector<int>& wf, std::vector<size_t>& starts, std::vector<size_t>& stops) const
+  void CaloDigiMaker::extract(const std::vector<int>& wf, std::vector<size_t>& starts, std::vector<size_t>& stops, int thr) const
   {
        size_t timeSample(nBinsPeak_+bufferDigi_);
        while (timeSample+nBinsPeak_ < wf.size()){
            // find starting point
-           if (wf[timeSample] < minPeakADC_) {++timeSample; continue;}
+           if (wf[timeSample] < thr) {++timeSample; continue;}
 
            size_t imax(timeSample-nBinsPeak_);
            for (auto i = timeSample-nBinsPeak_; i<=timeSample+nBinsPeak_;++i) {if (wf[i]>wf[imax]) imax=i;}
@@ -334,7 +346,7 @@ namespace mu2e {
            size_t sampleStart = (timeSample > bufferDigi_) ? timeSample - bufferDigi_ : 0;
            size_t sampleStop(timeSample);
            ++sampleStop;
-           while (sampleStop < wf.size() && wf[sampleStop] >= minPeakADC_) ++sampleStop;
+           while (sampleStop < wf.size() && wf[sampleStop] >= thr) ++sampleStop;
 
            starts.push_back(sampleStart);
            stops.push_back(sampleStop);
@@ -355,6 +367,31 @@ namespace mu2e {
        starts.erase(std::remove_if(starts.begin(),starts.end(),pred),starts.end());
        stops.erase(std::remove_if(stops.begin(), stops.end(), pred),stops.end());
   }
+
+  //-------------------------------------------------------------------------------------------------------------------
+  void CaloDigiMaker::readThresholds(const std::string& file, const std::string& column)
+  {
+       if (file.empty()) return;
+       ConfigFileLookupPolicy resolve;
+       std::ifstream in(resolve(file));
+       if (!in) throw cet::exception("CALODIGIMAKER") << "cannot open thresholdFile " << file << "\n";
+       std::string line; std::getline(in, line);
+       std::vector<std::string> head; { std::stringstream ss(line); std::string c; while (std::getline(ss, c, ',')) head.push_back(c); }
+       int iRoid = -1, iThr = -1;
+       for (size_t k = 0; k < head.size(); ++k) { if (head[k] == "roid") iRoid = k; if (head[k] == column) iThr = k; }
+       if (iRoid < 0 || iThr < 0) throw cet::exception("CALODIGIMAKER") << "thresholdFile " << file << " has no roid or " << column << " column\n";
+       size_t n = 0;
+       while (std::getline(in, line)) {
+           std::vector<std::string> f; std::stringstream ss(line); std::string c; while (std::getline(ss, c, ',')) f.push_back(c);
+           if ((int)f.size() <= std::max(iRoid, iThr)) continue;
+           const int roid = std::stoi(f[iRoid]); const double t = std::stod(f[iThr]);
+           if (roid < 0 || t <= 0) continue;
+           if ((size_t)roid >= thr_.size()) thr_.resize(roid + 1, -1);
+           thr_[roid] = int(std::lround(t)); ++n;
+       }
+       if (diagLevel_ > 0) std::cout << "[CaloDigiMaker] thresholds per SiPM from " << file << " (" << column << "): " << n << " SiPMs, others " << minPeakADC_ << " ADC" << std::endl;
+  }
+
 
   //-------------------------------------------------------------------------------------------------------------------
   double CaloDigiMaker::readoutScaleFactor(unsigned iRO, const CalSimParams& conds) const
