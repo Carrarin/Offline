@@ -4,6 +4,8 @@
 // Simulate digitization procedure and produce CaloDigis.
 // Digitization threshold: minPeakADC for all SiPMs, or one value per SiPM from thresholdFile (csv with a header row, column "roid" =
 // offline SiPM id and column thresholdColumn, ADC above the pedestal); SiPMs missing from the file keep minPeakADC.
+// End of a hit: the first sample below threshold, or with nSamplesBelowThr > 0 after that many consecutive samples below threshold
+// (as the readout firmware); the noise is then added over the same extended range.
 //
 //
 #include "art/Framework/Core/EDProducer.h"
@@ -70,6 +72,7 @@ namespace mu2e {
              fhicl::Atom<unsigned>      bufferDigi           { Name("bufferDigi"),             Comment("Number of timeStamps for the buffer digi") };
              fhicl::Atom<std::string>   thresholdFile        { Name("thresholdFile"),          Comment("csv with roid and the threshold per SiPM [ADC]; empty: minPeakADC for all"), "" };
              fhicl::Atom<std::string>   thresholdColumn      { Name("thresholdColumn"),        Comment("column of thresholdFile with the threshold"), "threshold_adc" };
+             fhicl::Atom<unsigned>      nSamplesBelowThr     { Name("nSamplesBelowThr"),       Comment("consecutive samples below threshold that close a hit; 0: the hit closes at the first sample below threshold"), 0 };
              fhicl::Atom<int>           diagLevel            { Name("diagLevel"),              Comment("Diag Level"),0 };
          };
 
@@ -87,6 +90,7 @@ namespace mu2e {
             nBinsPeak_         (config().nBinsPeak()),
             minPeakADC_        (config().minPeakADC()),
             minNoiseAmp_       (config().minNoiseAmp()),
+            nBelowThr_         (config().nSamplesBelowThr()),
             engine_            (createEngine(art::ServiceHandle<SeedService>()->getSeed())),
             addNoise_          (config().addNoise()),
             noiseSampler_      (config().noiseCache(), engine_),
@@ -135,6 +139,7 @@ namespace mu2e {
        int                     minPeakADC_;
        std::vector<int>        thr_;
        float                   minNoiseAmp_;
+       unsigned                nBelowThr_;
        CLHEP::HepRandomEngine& engine_;
        bool                    addNoise_;
        CaloNoiseUtil           noiseSampler_;
@@ -237,6 +242,7 @@ namespace mu2e {
            size_t sampleStart = (timeSample > bufferDigi_) ? timeSample - bufferDigi_ : 0;
            size_t sampleStop(timeSample);
            while (sampleStop < waveform.size() && waveform[sampleStop] > minNoiseAmp_) ++sampleStop;
+           sampleStop = std::min(sampleStop + nBelowThr_, waveform.size());
 
            hitStarts.push_back(sampleStart);
            hitStops.push_back(sampleStop);
@@ -347,6 +353,10 @@ namespace mu2e {
            size_t sampleStop(timeSample);
            ++sampleStop;
            while (sampleStop < wf.size() && wf[sampleStop] >= thr) ++sampleStop;
+           if (nBelowThr_ > 0) {
+              unsigned nBelow(0);
+              while (sampleStop < wf.size() && nBelow < nBelowThr_) {nBelow = (wf[sampleStop] < thr) ? nBelow+1 : 0; ++sampleStop;}
+           }
 
            starts.push_back(sampleStart);
            stops.push_back(sampleStop);
