@@ -7,6 +7,7 @@
 #   CalSimParams   ADCPerMeV per SiPM from the MIP calibration, pePerMeV = ADCPerMeV / p0 of the laser (125328), LRU 0
 #   thresholds     per SiPM, 0.5 % percentile of the hit amplitude (book chapter 10)
 #   pulse          cosmic template v2 (125328), the same the reconstruction fits
+#   hit window     closed after 58 consecutive samples below threshold: tail measured on the CaloDigis of run 125367 (DRAC register 154)
 #   noise          Offline default (ReadoutNoise.root, one shape scaled by the ADC per photoelectron of each SiPM): to be checked
 #   reconstruction CalEnergyCalib = 1/ADCPerMeV of the simulation, time offsets 0
 # Usage (muse setup of the mc2reco area): mu2e -c Offline/MC2Reco/fcl/sim/mc2_digi_reco.fcl -s <dts.art> -T <out.root>
@@ -27,7 +28,8 @@ physics : {
       MC2CaloDigiMaker         : { @table::CaloMC.CaloDigiMaker
                                    pulseCache    : { @table::CaloMC.CaloDigiMaker.pulseCache fileName : "Offline/MC2Reco/data/sim/pulse_cosmic_r125328_v2.root" }
                                    thresholdFile : "Offline/MC2Reco/data/sim/sim_thresholds_r125329.csv"
-                                   thresholdColumn : "thrRaw_adc" }   # Offline CaloDigiMaker, threshold per SiPM
+                                   thresholdColumn : "thrRaw_adc"
+                                   nSamplesBelowThr : 58 }   # Offline CaloDigiMaker, threshold per SiPM; hit closed after 58 samples below threshold (run 125367 data)
       MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker caloDigiCollection : MC2CaloDigiMaker useCalCalibTimeOffset : true }
       MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker time4Merge : 50. }
       MC2CaloCosmicTrackFinder : { @table::MC2Reco.MC2CaloCosmicTrackFinder }
