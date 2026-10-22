@@ -1,0 +1,86 @@
+# Digitization and reconstruction of the KPP hall simulation (cosmic_cry_hall_kpp.fcl), in the geometry of the data
+# (Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt):
+#   tracker     makeSD from the compressed StrawGasSteps (as Production digitize), then makeSH, SimpleTimeCluster, CosmicShowerFilter,
+#               LineFinder, KKLine (as PassN Combined_Pass1)
+#   CRV         CrvPhotons, CrvSiPMCharges, CrvWaveforms, CrvDigi (extracted epilog), CrvRecoPulses, CrvCoincidenceClusterFinder
+#   calorimeter the MC2 response of mc2_digi_reco.fcl (CaloShowerROMaker + CaloDigiMaker with the measured inputs) and the MC2 reco
+# All events are kept. Usage: mu2e -c Offline/MC2Reco/fcl/sim/mc2_kpp_digi_reco.fcl -s <dts.art> -o <rec.art>
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CommonMC/fcl/prolog.fcl"
+#include "Offline/TrackerMC/fcl/prolog.fcl"
+#include "Offline/CaloMC/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/CRVResponse/fcl/prolog.fcl"
+#include "Offline/CRVReco/fcl/prolog.fcl"
+#include "Offline/TrkHitReco/fcl/prolog.fcl"
+#include "Offline/CosmicReco/fcl/prolog.fcl"
+#include "Offline/Mu2eKinKal/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+#include "Production/JobConfig/reco/prolog.fcl"
+
+process_name : MC2KppDigiReco
+source   : { module_type : RootInput }
+services : @local::Services.SimAndReco
+physics : {
+   producers : {
+      EWMProducer              : { module_type : EventWindowMarkerProducer  SpillType : 0  RecoFromMCTruth : false }
+      # tracker
+      makeSD                   : { @table::TrackerMC.DigiProducers.makeSD StrawGasStepModules : [ "compressDetStepMCs" ] }
+      makeSH                   : @local::TrkHitReco.makeSH
+      SimpleTimeCluster        : @local::CosmicReco.SimpleTimeCluster
+      CosmicShowerFilter       : @local::CosmicReco.CosmicShowerFilter
+      LineFinder               : @local::CosmicReco.LineFinder
+      KKLine                   : @local::Mu2eKinKal.producers.KKLine
+      # CRV
+      @table::CrvDAQPackage.producers
+      @table::CrvRecoPackage.producers
+      # calorimeter (MC2 response and reco)
+      CaloShowerROMaker        : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : [ "compressDetStepMCs" ] }
+      MC2CaloDigiMaker         : { @table::CaloMC.CaloDigiMaker
+                                   pulseCache    : { @table::CaloMC.CaloDigiMaker.pulseCache fileName : "Offline/MC2Reco/data/sim/pulse_cosmic_r125328_v2.root" }
+                                   thresholdFile : "Offline/MC2Reco/data/sim/sim_thresholds_r125329.csv"
+                                   thresholdColumn : "thrRaw_adc"
+                                   nSamplesBelowThr : 58 }
+      MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker caloDigiCollection : MC2CaloDigiMaker useCalCalibTimeOffset : true }
+      MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker time4Merge : 50. }
+      MC2CaloCosmicTrackFinder : { @table::MC2Reco.MC2CaloCosmicTrackFinder }
+   }
+   TrkPath  : [ EWMProducer, makeSD, makeSH, SimpleTimeCluster, CosmicShowerFilter, LineFinder, KKLine ]
+   CrvPath  : [ EWMProducer, @sequence::CrvDAQPackage.CrvDAQSequence, @sequence::CrvRecoPackage.CrvRecoSequence ]
+   CaloPath : [ EWMProducer, CaloShowerROMaker, MC2CaloDigiMaker, MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloCosmicTrackFinder ]
+   out      : [ Output ]
+   trigger_paths : [ TrkPath, CrvPath, CaloPath ]
+   end_paths     : [ out ]
+}
+outputs : { Output : { module_type : RootOutput  fileName : @nil  outputCommands : [ "drop *_*_*_*",
+      "keep mu2e::KalSeeds_*_*_*", "keep mu2e::TimeClusters_*_*_*", "keep mu2e::ComboHits_*_*_*", "keep mu2e::StrawHits_*_*_*",
+      "keep mu2e::StrawDigis_*_*_*", "keep mu2e::StrawDigiMCs_*_*_*", "keep mu2e::CrvDigis_*_*_*", "keep mu2e::CrvRecoPulses_*_*_*",
+      "keep mu2e::CrvCoincidenceClusters_*_*_*", "keep mu2e::CaloRecoDigis_*_*_*", "keep mu2e::CaloHits_*_*_*", "keep *_MC2CaloCosmicTrackFinder_*_*",
+      "keep mu2e::SimParticlemv_compressDetStepMCs_*_*", "keep mu2e::GenParticles_*_*_*", "keep mu2e::CosmicLivetime_*_*_*",
+      "keep mu2e::EventWindowMarker_*_*_*", "keep mu2e::ProtonBunchTime_*_*_*", "keep art::TriggerResults_*_*_*" ] } }
+
+services.GeometryService.inputFile  : "Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_field.txt"
+# calorimeter response and calibration of the simulation (as mc2_digi_reco.fcl)
+services.ProditionsService.calSimParams.fileName : "Offline/MC2Reco/data/sim/CalSimCrystals_r125329_laser_fcl.txt"
+services.ProditionsService.calSimParams.useDb : false
+services.ProditionsService.calCalib.useDb : true
+# simulation conditions of Production (Sim_best v1_4) for tracker and CRV (the commissioning tables of the data cover only the data runs); calorimeter
+# tables of the simulation
+services.DbService.purpose : Sim_best
+services.DbService.version : v1_4
+services.DbService.textFile : [ "Offline/MC2Reco/data/sim/CalEnergyCalib_r125329_sim.txt", "Offline/MC2Reco/data/sim/CalTimeCalib_zero.txt" ]
+services.SeedService.baseSeed : 8200
+services.scheduler.wantSummary : true
+physics.producers.CrvPhotons.crvStepModuleLabels : [ "compressDetStepMCs" ]
+physics.producers.CrvPhotons.crvStepProcessNames : [ "" ]
+#include "Offline/CRVResponse/fcl/epilog_extracted.fcl"
+#include "Offline/CRVReco/fcl/epilog_extracted.fcl"
+# tracker reconstruction settings of the data (PassN)
+#include "PassN/Tracker/TrkReco_epilog.fcl"
+# the CRV tables of Sim_best are for the 2048 counters of Mu2e, the extracted CRV has 2304: nominal photon yields, status and calibration
+services.ProditionsService.crvPhotonYield.useDb : false
+services.ProditionsService.crvStatus.useDb : false
+services.ProditionsService.crvCalib.useDb : false

@@ -1,0 +1,7 @@
+# Cosmic CRY through the Mu2e hall with tracker, calorimeter and CRV in the KPP (extracted) setup, calorimeter and CRV at their measured
+# positions (Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt); events kept if they leave steps in the calorimeter; tracker and
+# CRV steps are kept too. Same physics and filter as cosmic_cry_hall_calo.fcl (muse setup SimJob).
+#include "Offline/MC2Reco/fcl/sim/cosmic_cry_hall_calo.fcl"
+physics.producers.generate.inputFile : "Offline/MC2Reco/fcl/sim/caloCRYconfig_kpp.txt"
+services.GeometryService.inputFile : "Offline/MC2Reco/data/geom/geom_cosmic_extracted_mc2kpp.txt"
+outputs.PrimaryOutput.fileName : "dts.mc2.CosmicCRYHallKPP.version.sequencer.art"

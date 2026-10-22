@@ -1,0 +1,8 @@
+// Geometry of the KPP hall cosmic simulation: geom_extracted_mc2kpp.txt (calorimeter and CRV at their measured positions) with the
+// world margins of Production/JobConfig/cosmic/geom_cosmic_extracted.txt.
+#include "Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt"
+
+double world.minimalMargin.xmin = 500000;
+double world.minimalMargin.xmax = 500000;
+double world.minimalMargin.zmin = 500000;
+double world.minimalMargin.zmax = 500000;

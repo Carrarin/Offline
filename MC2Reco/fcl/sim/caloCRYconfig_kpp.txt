@@ -1,0 +1,51 @@
+// CRY for the MC2 calorimeter in the extracted (garage) position: the Production extractedCRYconfig.txt with the target box
+// restricted to the calorimeter (+-1150 mm around the detector axis x = -3904, y = 0; z 25400-27650 around the mother 25842-27220),
+// ~40 cm beyond the crystals for the scattering in the hall material. Livetime from CRY, rates absolute. (19/10/2026)
+// extracted config for CRY cosmic generator
+
+// Verbose
+int cosmicCRY.verbose = 0;
+
+string cosmicCRY.refPoint = "CALO";
+double cosmicCRY.refY0 = 20000; // 15.4 meter above nominal beam height - at the surface
+
+bool cosmicCRY.projectToTargetBox = true;
+
+double cosmicCRY.targetBoxXmin = -5050;
+double cosmicCRY.targetBoxXmax = -2750;
+
+double cosmicCRY.targetBoxYmin = -1150;
+double cosmicCRY.targetBoxYmax = 1150;
+
+double cosmicCRY.targetBoxZmin = 26470;   // 25400 + 1070: calorimeter at its measured position (geom_extracted_mc2kpp.txt)
+double cosmicCRY.targetBoxZmax = 28720;   // 27650 + 1070
+
+// Enable all particles by default
+bool cosmicCRY.returnMuons = true;
+bool cosmicCRY.returnNeutrons = true;
+bool cosmicCRY.returnProtons = true;
+bool cosmicCRY.returnGammas = true;
+bool cosmicCRY.returnElectrons = true;
+bool cosmicCRY.returnPions = true;
+bool cosmicCRY.returnKaons = true;
+
+
+// Date
+int cosmicCRY.month = 6;
+int cosmicCRY.day = 21;
+int cosmicCRY.year = 2021;
+
+// Experiment site settings
+double cosmicCRY.latitude = 41.8;
+int cosmicCRY.altitude = 0; // meter, accepts either of 3 values: 0, 2100 or 11300
+double cosmicCRY.subboxLength = 300.; // meter
+double cosmicCRY.maxShowerEn  = 2e5; // MeV
+double cosmicCRY.minShowerEn  = 50; // MeV
+
+
+// This tells emacs to view this file in c++ mode.
+// Local Variables:
+// mode:c++
+// End:
+// Similar stuff for vim
+// vim: ft=cpp

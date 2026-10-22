@@ -1,0 +1,27 @@
+# Reconstruction of the KPP combined runs (tracker + CRV + calorimeter, raw DAQ files) in the MC2 hall geometry
+# (Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt).
+#   tracker and CRV: PassN/Combined_Pass1.fcl (Mu2e/PassN: makeSD, makeSH, SimpleTimeCluster, CosmicShowerFilter, LineFinder, KKLine;
+#                    CrvDigi, CrvRecoPulses, CrvCoincidenceClusterFinder) with its tracker calibrations
+#   calorimeter:     MC2Reco chain (MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloCosmicTrackFinder); the standard CaloReco of PassN is
+#                    not run (its clustering does not skip the PIN diodes of these runs)
+# All events are kept. The calorimeter tables come from a conditions set given at run time (with /data1/mu2e/mc2 in MU2E_SEARCH_PATH), e.g.
+#   services.DbService.textFile : [ @sequence::services.DbService.textFile, "conditions/sets/kpp_calo_v001.txt" ]
+#include "Offline/DAQ/fcl/prolog.fcl"
+#include "Offline/CaloReco/fcl/prolog.fcl"
+#include "Offline/MC2Reco/fcl/prolog.fcl"
+#include "PassN/Combined_Pass1.fcl"
+
+physics.producers.makeSD.addressing : "byMnid"
+physics.producers.MC2CaloRecoDigiMaker     : { @table::MC2Reco.MC2CaloRecoDigiMaker useCalCalibTimeOffset : true }
+physics.producers.MC2CaloHitMaker          : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : MC2CaloRecoDigiMaker time4Merge : 50. }
+physics.producers.MC2CaloCosmicTrackFinder : { @table::MC2Reco.MC2CaloCosmicTrackFinder }
+physics.RecoPath     : [ makeSD, EWMProducer, makeSH, SimpleTimeCluster, CosmicShowerFilter, LineFinder, KKLine ]
+physics.CaloRecoPath : [ CaloDigis, MC2CaloRecoDigiMaker, MC2CaloHitMaker, MC2CaloCosmicTrackFinder ]
+physics.trigger_paths : [ RecoPath, CaloRecoPath, CRVRecoPath ]
+physics.end_paths : [ EndPath ]
+services.GeometryService.inputFile : "Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt"
+services.ProditionsService.calCalib.useDb : true
+services.DbService.textFile : [ "Offline/TrackerConditions/data/TrkPanelMap.txt", "PassN/Tracker/trackercalibrations.txt" ]   # PassN without its example calo tables
+outputs.KinematicLineOutput.outputCommands : [ @sequence::outputs.KinematicLineOutput.outputCommands,
+      "keep mu2e::CaloHits_MC2CaloHitMaker_*_*", "keep *_MC2CaloCosmicTrackFinder_*_*", "keep mu2e::StrawDigis_makeSD_*_*",
+      "keep mu2e::KalSeeds_KKLine_*_*", "keep mu2e::ComboHits_*_*_*", "keep mu2e::StrawHits_*_*_*", "drop mu2e::CaloHits_CaloHitMaker_*_*" ]

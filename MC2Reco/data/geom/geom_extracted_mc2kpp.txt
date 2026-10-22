@@ -1,0 +1,31 @@
+// MC2 hall (KPP): Offline extracted geometry (geom_common_extracted_v04) with the calorimeter and the CRV at the positions measured
+// with cosmics relative to the tracker (tracker tracks against in-time calorimeter crystals and CRV coincidences, runs 125470, 125478);
+// the tracker and the detector frame are unchanged.
+//   calorimeter +1070 mm along z (both disks; transverse residuals within a few mm); hand measurement +1099 mm
+//   CRV         +1233 mm along z, -100 mm in height (residual across the counters vs track slope, top planes)
+// The MBS and the calorimeter cable run of the garage model are attached to the calorimeter in v04: the MBS is moved with it and sticks out
+// of the downstream end of the garage DS3 envelope (an air volume; the part outside is not simulated), the cable run on top of the
+// calorimeter is moved with it and the run behind it is shortened at its upstream end.
+// Known overlaps: MBSMother outside garageFakeDS3Vacuum (see above); the downstream end of CRV-EX enters the ceiling beam dsAreaDownstreamCeilingVslab1 by ~17 cm (at +1050 mm it enters
+// dsAreaHatchELedge instead): the hall model around the CRV-T does not match the measured position; to be checked on the hall drawings.
+#include "Offline/Mu2eG4/geom/geom_common_extracted_v04.txt"
+
+double calorimeter.caloMotherZ0                 = 26912;   // v04 25842
+double calorimeter.caloMotherZ1                 = 28290;   // v04 27220
+double calorimeter.calorimeterZFront            = 26913;   // v04 25843
+double mbs.MBSCZ                                = 30343.0;   // v04 29273.0, moved with the calorimeter
+double ds.CableRunCal.UpZC2                       = 14186.0;   // v04 13116.0: part on top of the calorimeter, moved with it
+double ds.CableRunCal.zC                          = 16010.0;   // v04 15475.0 and half length 1725: run behind the calorimeter
+double ds.CableRunCal.length                      = 1190.0;    //   shortened at its upstream end, downstream end unchanged
+
+vector<double>  crs.firstCounterEX               =  {-3904.00, 4287, 22672.55}; // v04 {-3904.00, 4387, 21439.55}
+vector<double>  crs.firstCounterT1               =  {-4702.77, 4137, 24297.95}; // v04 {-4702.77, 4237, 23064.95}
+vector<double>  crs.firstCounterT2               =  {-3904.00, 4437, 23499.18}; // v04 {-3904.00, 4537, 22266.18}
+vector<double>  crs.firstCounterM1               =  {-3509.10, 4549.4, 24259.58}; // v04 {-3509.10, 4649.4, 23026.58}
+vector<double>  crs.firstCounterM2               =  {-3614.60, 4549.4, 24259.58}; // v04 {-3614.60, 4649.4, 23026.58}
+vector<double>  crs.firstCounterM3               =  {-3720.10, 4549.4, 24259.58}; // v04 {-3720.10, 4649.4, 23026.58}
+vector<double>  crs.firstCounterM4               =  {-3825.60, 4549.4, 24259.58}; // v04 {-3825.60, 4649.4, 23026.58}
+vector<double>  crs.firstCounterM5               =  {-3931.10, 4549.4, 24259.58}; // v04 {-3931.10, 4649.4, 23026.58}
+vector<double>  crs.firstCounterM6               =  {-4036.60, 4549.4, 24259.58}; // v04 {-4036.60, 4649.4, 23026.58}
+vector<double>  crs.firstCounterM7               =  {-4142.10, 4549.4, 24259.58}; // v04 {-4142.10, 4649.4, 23026.58}
+vector<double>  crs.firstCounterM8               =  {-4247.60, 4549.4, 24259.58}; // v04 {-4247.60, 4649.4, 23026.58}

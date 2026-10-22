@@ -1,0 +1,17 @@
+# EventNtuple of the KPP reconstruction (kpp_combined.fcl, data; mc2_kpp_digi_reco.fcl, simulation): KKLine cosmic tracks with their
+# hits, MC2 calorimeter hits, CRV coincidences, in the MC2 hall geometry. No MC truth branches.
+#include "EventNtuple/fcl/from_mcs-mockdata_noMC.fcl"
+physics.EventNtuplePath : [ @sequence::EventNtuple.PathExt ]
+physics.analyzers.EventNtuple.trk.fits : [ { @table::Ext options : { fillMC : false fillHits : true genealogyDepth : -1 matchDepth : -1 } } ]
+physics.analyzers.EventNtuple.trk.fillTrkDtDt : false
+physics.analyzers.EventNtuple.trk.mc.fill : false
+physics.analyzers.EventNtuple.FitType : KinematicLine
+physics.analyzers.EventNtuple.calo.fillClusters : false
+physics.analyzers.EventNtuple.calo.hitsTag : "MC2CaloHitMaker"
+physics.analyzers.EventNtuple.crv.coincidencesTag : "CrvCoincidenceClusterFinder"
+physics.analyzers.EventNtuple.crv.recoPulsesTag : "CrvRecoPulses"
+physics.analyzers.EventNtuple.hasCRV : false
+physics.analyzers.EventNtuple.RecoCountTag : ""
+physics.analyzers.EventNtuple.PBTTag : ""
+physics.analyzers.EventNtuple.FillTriggerInfo : false
+services.GeometryService.inputFile : "Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt"

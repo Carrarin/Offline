@@ -104,6 +104,7 @@ namespace mu2e {
         else { const double a2m = calib.ADC2MeV(rd->SiPMID()); if (a2m > 0) a = rd->energyDep() / a2m; }
         if (a < minAmp_) { ok = false; break; } }
       if (!ok) continue;
+      if (h.crystalID() >= int(cal.nCrystals())) continue;   // PIN diodes of the laser (read out in the KPP runs)
       const auto& c = cal.crystal(h.crystalID()); const int d = c.diskID(); if (d < 0 || d > 1) continue;
       const auto p = cal.mu2eToTracker(c.position());
       ch.push_back({i, d, p.x(), p.y(), p.z() + depth_ + dzOff_[d], h.time(), h.energyDep()});
