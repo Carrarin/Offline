@@ -1,0 +1,9 @@
+# KPP combined raw files, calorimeter only: MC2 chain of kpp_combined.fcl + MC2MuCapture (mu- capture tags, LYSO and CsI neighbours).
+# No art output. Conditions: add the set of the run, e.g.
+#   services.DbService.textFile : [ @sequence::services.DbService.textFile, "conditions/sets/kpp_calo_v001.txt" ]
+#include "Offline/MC2Reco/fcl/kpp/kpp_combined.fcl"
+physics.analyzers.capture : { @table::MC2Reco.MC2MuCapture }
+physics.ana : [ capture ]
+physics.trigger_paths : [ CaloRecoPath ]
+physics.end_paths : [ ana ]
+outputs : @erase
