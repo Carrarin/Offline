@@ -2,7 +2,7 @@
 // the capture leaves, and when. One tree entry per stopped mu+ or mu-.
 //
 // Stopped muon: SimParticle with |pdg| = 13, end kinetic energy < maxEndKE, with CaloShowerSteps of its own, whose end point is inside
-//               a crystal box (34 x 34 x 200 mm around the crystal centre): inCry = 1 and that is the stop crystal; otherwise (stopped
+//               a crystal box (34 x 34 x 200 mm around the crystal centre = front face (Crystal::position) + half length): inCry = 1 and that is the stop crystal; otherwise (stopped
 //               in the material around the crystals) inCry = 0 and the reference crystal is the last one the muon crossed. Its own deposit (all its steps) =
 //               prompt. (Most muons with calo steps that reach zero energy stop outside the crystals: floor, supports.)
 // Daughters   : first generation (parent = the muon): pdg, creation code, kinetic energy at start, start time - muon end time.
@@ -85,7 +85,7 @@ namespace mu2e {
       // stop crystal: the crystal box (34 x 34 x 200 mm around its centre) that contains the end point
       const auto pe = cal.mu2eToTracker(sp.endPosition()); int c0 = -1;
       for (int c = 0; c < (int)cal.nCrystals(); ++c) {
-        const auto pc = cal.mu2eToTracker(cal.crystal(c).position());
+        const auto pc = cal.mu2eToTracker(cal.crystal(c).position() + 0.5 * cal.disk(cal.crystal(c).diskID()).diskInfo().crystalZLength() * cal.disk(cal.crystal(c).diskID()).diskInfo().crystalDirection());   // centre: position() is the front face
         if (std::fabs(pe.x() - pc.x()) < halfXY_ && std::fabs(pe.y() - pc.y()) < halfXY_ && std::fabs(pe.z() - pc.z()) < halfZ_) { c0 = c; break; }
       }
       inCry_ = c0 >= 0;
