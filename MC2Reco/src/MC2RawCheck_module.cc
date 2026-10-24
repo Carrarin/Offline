@@ -1,18 +1,46 @@
-// MC2RawCheck: integrity of the raw calorimeter data, read directly from the DTC fragments of the art file (before any
-// reconstruction), in the same way as Offline DAQ/src/CaloDigisFromDTCEvents_module.cc, but keeping also the hits that the
-// decoder drops.
 //
-// Per event : event-window tag of every calorimeter sub-event (DTC) and of every ROC data block (link); monotonicity; ROC blocks
-//             present; number of hits; laser events (hits >= laserMinHits).
-// Per hit   : CaloDAQUtilities::isHitGood error code (the reason why Offline drops a hit) and the 4-bit ErrorFlags of the hit packet,
-//             counted bit by bit, per channel and in time, for kept and for dropped hits;
-//             in-payload event-window tag vs the sub-event tag; detector type (CALO / CAPHRI / LASER ...); waveform length, index of
-//             the largest sample, saturation; pedestal = mean of the first nPed samples, its rms, and the Baseline field of the packet.
-// Time      : slices of sliceMinutes from the event-window tag (windowMicroseconds per window, ASSUMPTION written in the output);
-//             per channel and slice: pedestal sums (stability) and hit counts; in laser events, per board and slice: median sample of
-//             the peak relative to the median of the event (whole-sample jumps of a board).
-// Output    : histograms in the TFileService file, directory MC2RawCheck; read by Offline/MC2Reco/scripts/raw_check_report.py.
-// Channel key = 20 * BoardID + ChannelID (raw); hKeyOffline maps a key to its offline SiPM id (+1; 0 = not in the map).
+// MC2RawCheck: integrity of the raw calorimeter data, read directly from the DTC fragments of the art file (before any
+// reconstruction), in the same way as Offline DAQ/src/CaloDigisFromDTCEvents_module.cc, but keeping also the hits that
+// the decoder drops.
+//
+// Input: the DTC fragments of the event (CaloDAQUtilities::getFragments) and the CalDAQMap condition (raw -> offline).
+//
+// Output: histograms in the TFileService file, directory MC2RawCheck, read by
+// Offline/MC2Reco/scripts/raw_check_report.py (the names must not change).
+// Channel key = 20 * BoardID + ChannelID (raw).
+//
+//   Per event : event-window tag of every calorimeter sub-event (DTC) and of every ROC data block (link);
+//               monotonicity (hTagStep); ROC blocks present (hBlocks, hNBlocks, hBlockTagShift);
+//               number of hits (hNHits); laser events, i.e. events with at least laserMinHits hits (hLaserSlice).
+//   Per hit   : CaloDAQUtilities::isHitGood error code, i.e. the reason why Offline drops a hit
+//               (hErr, hErrTot, hErrSlice), and the 4-bit ErrorFlags of the hit packet, counted bit by bit, per
+//               channel and in time, for kept and for dropped hits
+//               (hFlags, hFlagsTot, hFlagBitKept, hFlagBitDropped, hFlagBitSlice);
+//               in-payload event-window tag vs the sub-event tag (hHitTagShift);
+//               detector type CALO / CAPHRI / LASER ... (hDet); waveform length (hNSamp), index of the largest
+//               sample (hPeakIdx), saturation (hSat); pedestal = mean of the first nPed samples, its rms, and the
+//               Baseline field of the packet (hPedSum, hPed2Sum, hNoiseSum, hPedN, hBaseDiff, hBaseline).
+//   Time      : slices of sliceMinutes from the event-window tag (windowMicroseconds per window: an ASSUMPTION,
+//               written in the output in hParams). Per channel and slice: pedestal sums (stability) and hit
+//               counts (hOccSlice); in laser events, per board and slice: median sample of the peak relative to
+//               the median of the event (hBoardJump: whole-sample jumps of a board).
+//               Fine 10 s bins for the rate plots (hRateFine).
+//   Pairs     : non-laser hits with a good hit of the other SiPM of the same crystal (hPartner) and the
+//               difference of their peak samples (hPartnerDt).
+//   Maps      : hKeyOffline maps a channel key to its offline SiPM id + 1 (0 = not in the map);
+//               hTagRange holds the first and the last event-window tag of the job.
+//
+// Steps per event:
+//   1. at the first event, the map channel key -> offline SiPM id (hKeyOffline)
+//   2. event-window tag of the event (first calorimeter sub-event); events without one are skipped
+//   3. tag histograms (step from the previous event, first and last tag) and the time slice of the event
+//   4. loop over the sub-events, ROC blocks and hits: block and hit checks, list of the good hits
+//   5. per-event counts (events, hits, blocks, laser events, rates)
+//   6. laser events: per-board jumps of the peak sample
+//   7. occupancy, rates per category and pairs of SiPMs of the same crystal
+//
+// Parameters: windowMicroseconds, sliceMinutes, nSlices (time axis); laserMinHits; nPed (pedestal samples); satADC.
+//
 #include "art/Framework/Core/EDAnalyzer.h"
 #include "art/Framework/Core/ModuleMacros.h"
 #include "art/Framework/Principal/Event.h"
@@ -29,160 +57,523 @@
 #include "TH1D.h"
 #include "TH2D.h"
 #include "TH3D.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <map>
+#include <utility>
 #include <vector>
 
 namespace mu2e {
-class MC2RawCheck : public art::EDAnalyzer {
- public:
-  struct Config {
-    fhicl::Atom<double> windowMicroseconds{fhicl::Name("windowMicroseconds"), fhicl::Comment("length of one event window [us] (time axis)"), 100.};
-    fhicl::Atom<double> sliceMinutes{fhicl::Name("sliceMinutes"), fhicl::Comment("time slice for the stability plots [min]"), 10.};
-    fhicl::Atom<int> nSlices{fhicl::Name("nSlices"), fhicl::Comment("maximum number of time slices"), 144};
-    fhicl::Atom<int> laserMinHits{fhicl::Name("laserMinHits"), fhicl::Comment("an event with at least this many hits is a laser pulse"), 1000};
-    fhicl::Atom<int> nPed{fhicl::Name("nPed"), fhicl::Comment("samples used for the pedestal"), 4};
-    fhicl::Atom<int> satADC{fhicl::Name("satADC"), fhicl::Comment("saturation [ADC]"), 4090};
+
+  class MC2RawCheck : public art::EDAnalyzer {
+    public:
+      struct Config {
+        using Name = fhicl::Name;
+        using Comment = fhicl::Comment;
+
+        // Time axis
+        fhicl::Atom<double> windowMicroseconds{Name("windowMicroseconds"),
+            Comment("length of one event window [us] (time axis)"), 100.};
+        fhicl::Atom<double> sliceMinutes{Name("sliceMinutes"),
+            Comment("time slice for the stability plots [min]"), 10.};
+        fhicl::Atom<int> nSlices{Name("nSlices"), Comment("maximum number of time slices"), 144};
+
+        // Event and hit classification
+        fhicl::Atom<int> laserMinHits{Name("laserMinHits"),
+            Comment("an event with at least this many hits is a laser pulse"), 1000};
+        fhicl::Atom<int> nPed{Name("nPed"), Comment("samples used for the pedestal"), 4};
+        fhicl::Atom<int> satADC{Name("satADC"), Comment("saturation [ADC]"), 4090};
+      };
+      using Parameters = art::EDAnalyzer::Table<Config>;
+
+      explicit MC2RawCheck(const Parameters& config);
+      void analyze(const art::Event& event) override;
+
+    private:
+      // One raw hit as decoded from a ROC block: packet and waveform.
+      using CaloHitData = std::pair<CalorimeterDataDecoder::CalorimeterHitDataPacket, std::vector<uint16_t>>;
+
+      // A hit that passed isHitGood: channel key and peak sample (packet Time + index of the largest sample).
+      struct GoodHit {
+        int key;
+        int peakSample;
+      };
+
+      // What the hit loop collects for the per-event histograms.
+      struct EventHits {
+        std::vector<GoodHit> goodHits;
+        int nHits = 0;              // all hits, good and bad
+        int nBlocks = 0;            // ROC blocks present
+        bool anyBadHit = false;
+      };
+
+      // Raw channel numbering
+      static constexpr int kNBoards = 160;
+      static constexpr int kNChannelsPerBoard = 20;
+      static constexpr int kNKeys = kNBoards * kNChannelsPerBoard;
+      static constexpr int kNDTCs = 32;
+      static constexpr int kNLinks = 8;
+
+      void bookHistograms();
+      void fillKeyToOfflineMap(const CalDAQMap& daqMap);
+      long long eventWindowTag(const artdaq::Fragments& fragments) const;
+      void fillTagHistograms(long long eventTag);
+      int timeSlice(long long tag) const;
+      EventHits checkRocBlocksAndHits(const artdaq::Fragments& fragments, double sliceTime);
+      void checkHit(const CaloHitData& hit, long long subEventTag, double sliceTime, EventHits& eventHits);
+      void fillPedestal(int key, const CalorimeterDataDecoder::CalorimeterHitDataPacket& packet,
+                        const std::vector<uint16_t>& waveform, double sliceTime);
+      bool fillEventCounts(const EventHits& eventHits, double sliceTime, double secondsFromStart);
+      void fillBoardJumps(const std::map<int, int>& peakByKey, double sliceTime);
+      void fillOccupancyAndPartners(const std::map<int, int>& peakByKey, bool isLaser, double sliceTime,
+                                    double secondsFromStart);
+      int offlineIdOfKey(int key) const;
+
+      // Parameters
+      double windowMicroseconds_;
+      double sliceMinutes_;
+      int nSlices_;
+      int laserMinHits_;
+      int nPedSamples_;
+      int satADC_;
+
+      // Conditions and decoding
+      ProditionsHandle<CalDAQMap> daqMapHandle_;
+      CaloDAQUtilities daqUtilities_;
+
+      // State
+      long long firstTag_ = -1;       // event-window tag of the first event: origin of the time axis
+      long long lastTag_ = -1;        // tag of the previous event
+      bool keyMapFilled_ = false;
+
+      // Output histograms (member name = histogram name + _), see the header comment
+      TH1D* hEvSlice_;
+      TH1D* hLaserSlice_;
+      TH1D* hEvFailSlice_;
+      TH1D* hTagStep_;
+      TH1D* hNHits_;
+      TH1D* hNBlocks_;
+      TH2D* hBlocks_;
+      TH2D* hBlockTagShift_;
+      TH1D* hKeyOffline_;
+      TH2D* hErr_;
+      TH1D* hErrTot_;
+      TH2D* hErrSlice_;
+      TH2D* hFlags_;
+      TH2D* hHitTagShift_;
+      TH2D* hDet_;
+      TH1D* hOcc_;
+      TH1D* hOccLaser_;
+      TH1D* hPartner_;
+      TH2D* hPartnerDt_;
+      TH1D* hSat_;
+      TH1D* hPeakIdx_;
+      TH2D* hNSamp_;
+      TH2D* hPedSum_;
+      TH2D* hPed2Sum_;
+      TH2D* hNoiseSum_;
+      TH2D* hFlagBitKept_;
+      TH2D* hFlagBitDropped_;
+      TH2D* hFlagBitSlice_;
+      TH1D* hFlagsTot_;
+      TH2D* hOccSlice_;
+      TH2D* hRateFine_;
+      TH1D* hTagRange_;
+      TH1D* hBaseline_;
+      TH2D* hPedN_;
+      TH2D* hBaseDiff_;
+      TH3D* hBoardJump_;
   };
-  using Parameters = art::EDAnalyzer::Table<Config>;
-  explicit MC2RawCheck(Parameters const& c);
-  void analyze(art::Event const& e) override;
 
- private:
-  static constexpr int NB = 160, NC = 20, NK = NB * NC, NDTC = 32, NLINK = 8;
-  double winUs_, sliceMin_; int nSl_, laserMin_, nPed_, sat_;
-  ProditionsHandle<CalDAQMap> daqMap_h_;
-  CaloDAQUtilities util_;
-  long long tag0_ = -1, lastTag_ = -1; bool mapFilled_ = false;
-  TH1D *hEvSlice_, *hLaserSlice_, *hTagStep_, *hNHits_, *hNBlocks_, *hKeyOffline_, *hOcc_, *hOccLaser_, *hPartner_, *hSat_, *hPeakIdx_, *hErrTot_, *hEvFailSlice_;
-  TH2D *hBlocks_, *hBlockTagShift_, *hErr_, *hFlags_, *hHitTagShift_, *hDet_, *hNSamp_, *hPedSum_, *hPed2Sum_, *hNoiseSum_, *hPedN_, *hBaseDiff_, *hErrSlice_;
-  TH2D *hFlagBitKept_, *hFlagBitDropped_, *hFlagBitSlice_; TH1D *hFlagsTot_, *hBaseline_, *hTagRange_; TH2D *hPartnerDt_, *hOccSlice_, *hRateFine_;
-  TH3D* hBoardJump_;
-  int slice(long long tag) const { if (tag0_ < 0) return 0; const double t = (tag - tag0_) * winUs_ * 1e-6 / 60. / sliceMin_; return std::clamp(int(std::floor(t)), 0, nSl_ - 1); }
-};
-
-MC2RawCheck::MC2RawCheck(Parameters const& c)
-    : art::EDAnalyzer{c}, winUs_(c().windowMicroseconds()), sliceMin_(c().sliceMinutes()), nSl_(c().nSlices()), laserMin_(c().laserMinHits()),
-      nPed_(c().nPed()), sat_(c().satADC()), util_("MC2RawCheck") {
-  art::ServiceHandle<art::TFileService> tfs; auto d = tfs->mkdir("MC2RawCheck");
-  const double sl = nSl_ * sliceMin_;
-  hEvSlice_ = d.make<TH1D>("hEvSlice", ";time from the first event [min];events", nSl_, 0, sl);
-  hLaserSlice_ = d.make<TH1D>("hLaserSlice", ";time [min];laser events", nSl_, 0, sl);
-  hEvFailSlice_ = d.make<TH1D>("hEvFailSlice", ";time [min];events with at least one bad hit", nSl_, 0, sl);
-  hTagStep_ = d.make<TH1D>("hTagStep", ";event-window tag - tag of the previous event;events", 41, -20.5, 20.5);
-  hNHits_ = d.make<TH1D>("hNHits", ";hits per event;events", 300, 0, 3000);
-  hNBlocks_ = d.make<TH1D>("hNBlocks", ";calorimeter ROC blocks per event;events", 200, -0.5, 199.5);
-  hBlocks_ = d.make<TH2D>("hBlocks", ";DTC id;link;events with this ROC block", NDTC, -0.5, NDTC - 0.5, NLINK, -0.5, NLINK - 0.5);
-  hBlockTagShift_ = d.make<TH2D>("hBlockTagShift", ";DTC id x 8 + link;ROC block tag - sub-event tag", NDTC * NLINK, -0.5, NDTC * NLINK - 0.5, 9, -4.5, 4.5);
-  hKeyOffline_ = d.make<TH1D>("hKeyOffline", ";channel key;offline SiPM id + 1", NK, -0.5, NK - 0.5);
-  hErr_ = d.make<TH2D>("hErr", ";channel key;isHitGood error code (0 = good)", NK, -0.5, NK - 0.5, 10, -0.5, 9.5);
-  hErrTot_ = d.make<TH1D>("hErrTot", ";isHitGood error code;hits", 10, -0.5, 9.5);
-  hErrSlice_ = d.make<TH2D>("hErrSlice", ";time [min];error code", nSl_, 0, sl, 10, -0.5, 9.5);
-  hFlags_ = d.make<TH2D>("hFlags", ";channel key;ErrorFlags (4 bits)", NK, -0.5, NK - 0.5, 16, -0.5, 15.5);
-  hHitTagShift_ = d.make<TH2D>("hHitTagShift", ";channel key;hit tag - sub-event tag (mod 2^16)", NK, -0.5, NK - 0.5, 9, -4.5, 4.5);
-  hDet_ = d.make<TH2D>("hDet", ";channel key;DetectorID", NK, -0.5, NK - 0.5, 8, -0.5, 7.5);
-  hOcc_ = d.make<TH1D>("hOcc", ";channel key;good hits, non-laser events", NK, -0.5, NK - 0.5);
-  hOccLaser_ = d.make<TH1D>("hOccLaser", ";channel key;good hits, laser events", NK, -0.5, NK - 0.5);
-  hPartner_ = d.make<TH1D>("hPartner", ";channel key;non-laser hits with a good hit of the other SiPM of the crystal in the same event", NK, -0.5, NK - 0.5);
-  hPartnerDt_ = d.make<TH2D>("hPartnerDt", ";channel key;peak sample of this SiPM - of the other SiPM (raw, no channel offsets)", NK, -0.5, NK - 0.5, 121, -300.5, 300.5);
-  hSat_ = d.make<TH1D>("hSat", ";channel key;saturated hits", NK, -0.5, NK - 0.5);
-  hPeakIdx_ = d.make<TH1D>("hPeakIdx", ";index of the largest sample;hits", 128, -0.5, 127.5);
-  hNSamp_ = d.make<TH2D>("hNSamp", ";channel key;samples in the waveform", NK, -0.5, NK - 0.5, 128, 0, 1024);
-  hPedSum_ = d.make<TH2D>("hPedSum", ";channel key;time [min]", NK, -0.5, NK - 0.5, nSl_, 0, sl);
-  hPed2Sum_ = d.make<TH2D>("hPed2Sum", ";channel key;time [min]", NK, -0.5, NK - 0.5, nSl_, 0, sl);
-  hNoiseSum_ = d.make<TH2D>("hNoiseSum", ";channel key;time [min]", NK, -0.5, NK - 0.5, nSl_, 0, sl);   // sum over hits of the variance of the first nPed samples
-  hFlagBitKept_ = d.make<TH2D>("hFlagBitKept", ";channel key;ErrorFlags bit set (hit kept by isHitGood)", NK, -0.5, NK - 0.5, 4, -0.5, 3.5);
-  hFlagBitDropped_ = d.make<TH2D>("hFlagBitDropped", ";channel key;ErrorFlags bit set (hit dropped by isHitGood)", NK, -0.5, NK - 0.5, 4, -0.5, 3.5);
-  hFlagBitSlice_ = d.make<TH2D>("hFlagBitSlice", ";time [min];ErrorFlags bit set", nSl_, 0, sl, 4, -0.5, 3.5);
-  hFlagsTot_ = d.make<TH1D>("hFlagsTot", ";ErrorFlags value;hits", 16, -0.5, 15.5);
-  hOccSlice_ = d.make<TH2D>("hOccSlice", ";channel key;time [min]", NK, -0.5, NK - 0.5, nSl_, 0, sl);   // good hits of non-laser events per channel and slice
-  // counts in fine 10 s bins (up to 24 h), for the rate plots: 0 events, 1 laser events, 2 good hits disk 0, 3 good hits disk 1, 4 good LYSO hits, 5 dropped hits (non-laser events for 2-4)
-  hRateFine_ = d.make<TH2D>("hRateFine", ";time [s] (10 s bins);category", 8640, 0, 86400, 6, -0.5, 5.5);
-  hTagRange_ = d.make<TH1D>("hTagRange", "first and last event-window tag of the job (bin 1, 2)", 2, 0, 2);
-  hBaseline_ = d.make<TH1D>("hBaseline", ";Baseline field of the hit packet [ADC];hits", 4096, -0.5, 4095.5);
-  hPedN_ = d.make<TH2D>("hPedN", ";channel key;time [min]", NK, -0.5, NK - 0.5, nSl_, 0, sl);
-  hBaseDiff_ = d.make<TH2D>("hBaseDiff", ";channel key;packet Baseline - mean of the first samples [ADC]", NK, -0.5, NK - 0.5, 81, -40.5, 40.5);
-  hBoardJump_ = d.make<TH3D>("hBoardJump", ";board;time [min];peak sample - median of the laser event [samples]", NB, -0.5, NB - 0.5, nSl_, 0, sl, 41, -20.5, 20.5);
-  TH1D* hp = d.make<TH1D>("hParams", "windowMicroseconds, sliceMinutes, nSlices, laserMinHits, nPed, satADC", 6, 0, 6);
-  hp->SetBinContent(1, winUs_); hp->SetBinContent(2, sliceMin_); hp->SetBinContent(3, nSl_); hp->SetBinContent(4, laserMin_); hp->SetBinContent(5, nPed_); hp->SetBinContent(6, sat_);
-}
-
-void MC2RawCheck::analyze(art::Event const& event) {
-  CalDAQMap const& daqMap = daqMap_h_.get(event.id());
-  if (!mapFilled_) {
-    for (int k = 0; k < NK; ++k) { CaloRawSiPMId raw(k / NC, k % NC); const auto off = daqMap.offlineId(raw).id(); if (off < CaloConst::_nChannel) hKeyOffline_->SetBinContent(k + 1, off + 1); }
-    mapFilled_ = true;
+  MC2RawCheck::MC2RawCheck(const Parameters& config) :
+    art::EDAnalyzer{config},
+    windowMicroseconds_(config().windowMicroseconds()),
+    sliceMinutes_(config().sliceMinutes()),
+    nSlices_(config().nSlices()),
+    laserMinHits_(config().laserMinHits()),
+    nPedSamples_(config().nPed()),
+    satADC_(config().satADC()),
+    daqUtilities_("MC2RawCheck")
+  {
+    bookHistograms();
   }
-  auto frags = util_.getFragments(event);
-  // first pass: the event-window tag of the event (first calorimeter sub-event) -> time slice
-  long long evTag = -1;
-  for (const auto& frag : frags) { DTCEventFragment ef(frag); for (auto& sub : ef.getSubsystemData(DTCLib::DTC_Subsystem::DTC_Subsystem_Calorimeter)) { evTag = (long long)sub.GetEventWindowTag().GetEventWindowTag(true); break; } if (evTag >= 0) break; }
-  if (evTag < 0) return;
-  if (tag0_ < 0) tag0_ = evTag;
-  if (lastTag_ >= 0) hTagStep_->Fill(std::clamp<long long>(evTag - lastTag_, -20, 20));
-  lastTag_ = evTag;
-  if (hTagRange_->GetBinContent(1) == 0 || evTag < hTagRange_->GetBinContent(1)) hTagRange_->SetBinContent(1, double(evTag));
-  if (evTag > hTagRange_->GetBinContent(2)) hTagRange_->SetBinContent(2, double(evTag));
-  const double tmin = (slice(evTag) + 0.5) * sliceMin_;
-  struct HitInfo { int key, peak; };
-  std::vector<HitInfo> good; int nAll = 0, nBlocks = 0; bool anyBad = false;
-  for (const auto& frag : frags) {
-    DTCEventFragment ef(frag);
-    for (auto& sub : ef.getSubsystemData(DTCLib::DTC_Subsystem::DTC_Subsystem_Calorimeter)) {
-      const long long st = (long long)sub.GetEventWindowTag().GetEventWindowTag(true);
-      CalorimeterDataDecoder dec(sub); const int dtc = sub.GetDTCID();
-      for (size_t ib = 0; ib < dec.block_count(); ++ib) {
-        auto blk = dec.dataAtBlockIndex(ib); if (!blk) continue; auto h = blk->GetHeader(); const int link = int(h->GetLinkID());
-        ++nBlocks; hBlocks_->Fill(dtc, link);
-        hBlockTagShift_->Fill(dtc * NLINK + link, std::clamp<long long>((long long)h->GetEventWindowTag().GetEventWindowTag(true) - st, -4, 4));
-        auto data = dec.GetCalorimeterHitData(ib); if (!data) continue;
-        for (auto& hp : *data) {
-          ++nAll; const auto& p = hp.first; const auto& wf = hp.second; const int key = int(p.BoardID) * NC + int(p.ChannelID);
-          const int code = int(util_.isHitGood(hp)); const int flags = int(p.ErrorFlags);
-          hErrTot_->Fill(code); hErrSlice_->Fill(tmin, code); hFlagsTot_->Fill(flags); if (code) anyBad = true;
-          for (int bit = 0; bit < 4; ++bit) if (flags & (1 << bit)) hFlagBitSlice_->Fill(tmin, bit);
-          if (key < 0 || key >= NK) continue;
-          hErr_->Fill(key, code); hFlags_->Fill(key, flags); hDet_->Fill(key, int(p.DetectorID));
-          for (int bit = 0; bit < 4; ++bit) if (flags & (1 << bit)) (code ? hFlagBitDropped_ : hFlagBitKept_)->Fill(key, bit);
-          int sh = int(p.InPayloadEventWindowTag) - int(st & 0xFFFF); if (sh > 32768) sh -= 65536; if (sh < -32768) sh += 65536;
-          hHitTagShift_->Fill(key, std::clamp(sh, -4, 4));
-          if (code) continue;
-          hNSamp_->Fill(key, wf.size()); hPeakIdx_->Fill(p.IndexOfMaxDigitizerSample);
-          int mx = 0; for (auto s : wf) mx = std::max<int>(mx, s); if (mx >= sat_) hSat_->Fill(key);
-          if ((int)wf.size() > nPed_) {
-            double s1 = 0, s2 = 0; for (int q = 0; q < nPed_; ++q) { s1 += wf[q]; s2 += double(wf[q]) * wf[q]; }
-            const double m = s1 / nPed_, var = std::max(0., s2 / nPed_ - m * m);
-            hBaseDiff_->Fill(key, double(p.Baseline) - m); hBaseline_->Fill(int(p.Baseline));
-            hPedSum_->Fill(key, tmin, m); hPed2Sum_->Fill(key, tmin, m * m); hNoiseSum_->Fill(key, tmin, var); hPedN_->Fill(key, tmin);
+
+  // All histograms, in the booking order of the output file; hParams stores the parameters for the report.
+  void MC2RawCheck::bookHistograms() {
+    art::ServiceHandle<art::TFileService> tfs;
+    auto dir = tfs->mkdir("MC2RawCheck");
+    const double maxMinutes = nSlices_ * sliceMinutes_;
+    const int nK = kNKeys;
+
+    // Events, tags and ROC blocks
+    hEvSlice_ = dir.make<TH1D>("hEvSlice", ";time from the first event [min];events", nSlices_, 0, maxMinutes);
+    hLaserSlice_ = dir.make<TH1D>("hLaserSlice", ";time [min];laser events", nSlices_, 0, maxMinutes);
+    hEvFailSlice_ = dir.make<TH1D>("hEvFailSlice", ";time [min];events with at least one bad hit",
+                                   nSlices_, 0, maxMinutes);
+    hTagStep_ = dir.make<TH1D>("hTagStep", ";event-window tag - tag of the previous event;events", 41, -20.5, 20.5);
+    hNHits_ = dir.make<TH1D>("hNHits", ";hits per event;events", 300, 0, 3000);
+    hNBlocks_ = dir.make<TH1D>("hNBlocks", ";calorimeter ROC blocks per event;events", 200, -0.5, 199.5);
+    hBlocks_ = dir.make<TH2D>("hBlocks", ";DTC id;link;events with this ROC block",
+                              kNDTCs, -0.5, kNDTCs - 0.5, kNLinks, -0.5, kNLinks - 0.5);
+    hBlockTagShift_ = dir.make<TH2D>("hBlockTagShift", ";DTC id x 8 + link;ROC block tag - sub-event tag",
+                                     kNDTCs * kNLinks, -0.5, kNDTCs * kNLinks - 0.5, 9, -4.5, 4.5);
+    hKeyOffline_ = dir.make<TH1D>("hKeyOffline", ";channel key;offline SiPM id + 1", nK, -0.5, nK - 0.5);
+
+    // Hit errors, flags, tags and detector type
+    hErr_ = dir.make<TH2D>("hErr", ";channel key;isHitGood error code (0 = good)",
+                           nK, -0.5, nK - 0.5, 10, -0.5, 9.5);
+    hErrTot_ = dir.make<TH1D>("hErrTot", ";isHitGood error code;hits", 10, -0.5, 9.5);
+    hErrSlice_ = dir.make<TH2D>("hErrSlice", ";time [min];error code", nSlices_, 0, maxMinutes, 10, -0.5, 9.5);
+    hFlags_ = dir.make<TH2D>("hFlags", ";channel key;ErrorFlags (4 bits)", nK, -0.5, nK - 0.5, 16, -0.5, 15.5);
+    hHitTagShift_ = dir.make<TH2D>("hHitTagShift", ";channel key;hit tag - sub-event tag (mod 2^16)",
+                                   nK, -0.5, nK - 0.5, 9, -4.5, 4.5);
+    hDet_ = dir.make<TH2D>("hDet", ";channel key;DetectorID", nK, -0.5, nK - 0.5, 8, -0.5, 7.5);
+
+    // Occupancy and pairs of SiPMs of the same crystal
+    hOcc_ = dir.make<TH1D>("hOcc", ";channel key;good hits, non-laser events", nK, -0.5, nK - 0.5);
+    hOccLaser_ = dir.make<TH1D>("hOccLaser", ";channel key;good hits, laser events", nK, -0.5, nK - 0.5);
+    hPartner_ = dir.make<TH1D>("hPartner",
+        ";channel key;non-laser hits with a good hit of the other SiPM of the crystal in the same event",
+        nK, -0.5, nK - 0.5);
+    hPartnerDt_ = dir.make<TH2D>("hPartnerDt",
+        ";channel key;peak sample of this SiPM - of the other SiPM (raw, no channel offsets)",
+        nK, -0.5, nK - 0.5, 121, -300.5, 300.5);
+
+    // Waveforms and pedestals
+    hSat_ = dir.make<TH1D>("hSat", ";channel key;saturated hits", nK, -0.5, nK - 0.5);
+    hPeakIdx_ = dir.make<TH1D>("hPeakIdx", ";index of the largest sample;hits", 128, -0.5, 127.5);
+    hNSamp_ = dir.make<TH2D>("hNSamp", ";channel key;samples in the waveform", nK, -0.5, nK - 0.5, 128, 0, 1024);
+    hPedSum_ = dir.make<TH2D>("hPedSum", ";channel key;time [min]", nK, -0.5, nK - 0.5, nSlices_, 0, maxMinutes);
+    hPed2Sum_ = dir.make<TH2D>("hPed2Sum", ";channel key;time [min]", nK, -0.5, nK - 0.5, nSlices_, 0, maxMinutes);
+    // sum over hits of the variance of the first nPed samples
+    hNoiseSum_ = dir.make<TH2D>("hNoiseSum", ";channel key;time [min]", nK, -0.5, nK - 0.5, nSlices_, 0, maxMinutes);
+
+    // ErrorFlags bit by bit
+    hFlagBitKept_ = dir.make<TH2D>("hFlagBitKept", ";channel key;ErrorFlags bit set (hit kept by isHitGood)",
+                                   nK, -0.5, nK - 0.5, 4, -0.5, 3.5);
+    hFlagBitDropped_ = dir.make<TH2D>("hFlagBitDropped", ";channel key;ErrorFlags bit set (hit dropped by isHitGood)",
+                                      nK, -0.5, nK - 0.5, 4, -0.5, 3.5);
+    hFlagBitSlice_ = dir.make<TH2D>("hFlagBitSlice", ";time [min];ErrorFlags bit set",
+                                    nSlices_, 0, maxMinutes, 4, -0.5, 3.5);
+    hFlagsTot_ = dir.make<TH1D>("hFlagsTot", ";ErrorFlags value;hits", 16, -0.5, 15.5);
+
+    // good hits of non-laser events per channel and slice
+    hOccSlice_ = dir.make<TH2D>("hOccSlice", ";channel key;time [min]", nK, -0.5, nK - 0.5, nSlices_, 0, maxMinutes);
+    // counts in fine 10 s bins (up to 24 h), for the rate plots, per category: 0 events, 1 laser events,
+    // 2 good hits disk 0, 3 good hits disk 1, 4 good LYSO hits, 5 dropped hits (categories 2-4 in non-laser events)
+    hRateFine_ = dir.make<TH2D>("hRateFine", ";time [s] (10 s bins);category", 8640, 0, 86400, 6, -0.5, 5.5);
+    hTagRange_ = dir.make<TH1D>("hTagRange", "first and last event-window tag of the job (bin 1, 2)", 2, 0, 2);
+    hBaseline_ = dir.make<TH1D>("hBaseline", ";Baseline field of the hit packet [ADC];hits", 4096, -0.5, 4095.5);
+    hPedN_ = dir.make<TH2D>("hPedN", ";channel key;time [min]", nK, -0.5, nK - 0.5, nSlices_, 0, maxMinutes);
+    hBaseDiff_ = dir.make<TH2D>("hBaseDiff", ";channel key;packet Baseline - mean of the first samples [ADC]",
+                                nK, -0.5, nK - 0.5, 81, -40.5, 40.5);
+    hBoardJump_ = dir.make<TH3D>("hBoardJump", ";board;time [min];peak sample - median of the laser event [samples]",
+                                 kNBoards, -0.5, kNBoards - 0.5, nSlices_, 0, maxMinutes, 41, -20.5, 20.5);
+
+    TH1D* hParams = dir.make<TH1D>("hParams", "windowMicroseconds, sliceMinutes, nSlices, laserMinHits, nPed, satADC",
+                                   6, 0, 6);
+    hParams->SetBinContent(1, windowMicroseconds_);
+    hParams->SetBinContent(2, sliceMinutes_);
+    hParams->SetBinContent(3, nSlices_);
+    hParams->SetBinContent(4, laserMinHits_);
+    hParams->SetBinContent(5, nPedSamples_);
+    hParams->SetBinContent(6, satADC_);
+  }
+
+  void MC2RawCheck::analyze(const art::Event& event) {
+    const CalDAQMap& daqMap = daqMapHandle_.get(event.id());
+    if (!keyMapFilled_) {
+      fillKeyToOfflineMap(daqMap);
+    }
+
+    const auto fragments = daqUtilities_.getFragments(event);
+    const long long eventTag = eventWindowTag(fragments);
+    if (eventTag < 0) {
+      return;
+    }
+    fillTagHistograms(eventTag);
+    // centre of the time slice of the event [min]
+    const double sliceTime = (timeSlice(eventTag) + 0.5) * sliceMinutes_;
+
+    const EventHits eventHits = checkRocBlocksAndHits(fragments, sliceTime);
+
+    const double secondsFromStart = (eventTag - firstTag_) * windowMicroseconds_ * 1e-6;
+    const bool isLaser = fillEventCounts(eventHits, sliceTime, secondsFromStart);
+
+    // peak sample per channel key (the last good hit of a channel in the event)
+    std::map<int, int> peakByKey;
+    for (const auto& hit : eventHits.goodHits) {
+      peakByKey[hit.key] = hit.peakSample;
+    }
+    if (isLaser && !peakByKey.empty()) {
+      fillBoardJumps(peakByKey, sliceTime);
+    }
+    fillOccupancyAndPartners(peakByKey, isLaser, sliceTime, secondsFromStart);
+  }
+
+  // hKeyOffline: channel key -> offline SiPM id + 1, for the keys in the DAQ map (bin content 0 for the others).
+  void MC2RawCheck::fillKeyToOfflineMap(const CalDAQMap& daqMap) {
+    for (int key = 0; key < kNKeys; ++key) {
+      CaloRawSiPMId rawId(key / kNChannelsPerBoard, key % kNChannelsPerBoard);
+      const auto offlineId = daqMap.offlineId(rawId).id();
+      if (offlineId < CaloConst::_nChannel) {
+        hKeyOffline_->SetBinContent(key + 1, offlineId + 1);
+      }
+    }
+    keyMapFilled_ = true;
+  }
+
+  // Offline SiPM id of a channel key from hKeyOffline (-1 if not in the map).
+  int MC2RawCheck::offlineIdOfKey(int key) const {
+    return int(hKeyOffline_->GetBinContent(key + 1)) - 1;
+  }
+
+  // Event-window tag of the event: the tag of the first calorimeter sub-event (-1 if there is none).
+  long long MC2RawCheck::eventWindowTag(const artdaq::Fragments& fragments) const {
+    long long eventTag = -1;
+    for (const auto& fragment : fragments) {
+      DTCEventFragment dtcEvent(fragment);
+      for (auto& subEvent : dtcEvent.getSubsystemData(DTCLib::DTC_Subsystem::DTC_Subsystem_Calorimeter)) {
+        eventTag = (long long)subEvent.GetEventWindowTag().GetEventWindowTag(true);
+        break;
+      }
+      if (eventTag >= 0) {
+        break;
+      }
+    }
+    return eventTag;
+  }
+
+  // Tag step from the previous event (monotonicity) and the first / last tag of the job.
+  void MC2RawCheck::fillTagHistograms(long long eventTag) {
+    if (firstTag_ < 0) {
+      firstTag_ = eventTag;
+    }
+    if (lastTag_ >= 0) {
+      hTagStep_->Fill(std::clamp<long long>(eventTag - lastTag_, -20, 20));
+    }
+    lastTag_ = eventTag;
+
+    if (hTagRange_->GetBinContent(1) == 0 || eventTag < hTagRange_->GetBinContent(1)) {
+      hTagRange_->SetBinContent(1, double(eventTag));
+    }
+    if (eventTag > hTagRange_->GetBinContent(2)) {
+      hTagRange_->SetBinContent(2, double(eventTag));
+    }
+  }
+
+  // Time slice of a tag, from the tag of the first event and windowMicroseconds per window, in [0, nSlices - 1].
+  int MC2RawCheck::timeSlice(long long tag) const {
+    if (firstTag_ < 0) {
+      return 0;
+    }
+    const double slice = (tag - firstTag_) * windowMicroseconds_ * 1e-6 / 60. / sliceMinutes_;
+    return std::clamp(int(std::floor(slice)), 0, nSlices_ - 1);
+  }
+
+  // Loop over the calorimeter sub-events (one per DTC) and their ROC blocks (one per link): block presence and tag,
+  // then every hit of the block.
+  MC2RawCheck::EventHits MC2RawCheck::checkRocBlocksAndHits(const artdaq::Fragments& fragments, double sliceTime) {
+    EventHits eventHits;
+    for (const auto& fragment : fragments) {
+      DTCEventFragment dtcEvent(fragment);
+      for (auto& subEvent : dtcEvent.getSubsystemData(DTCLib::DTC_Subsystem::DTC_Subsystem_Calorimeter)) {
+        const long long subEventTag = (long long)subEvent.GetEventWindowTag().GetEventWindowTag(true);
+        CalorimeterDataDecoder decoder(subEvent);
+        const int dtcId = subEvent.GetDTCID();
+
+        for (size_t blockIndex = 0; blockIndex < decoder.block_count(); ++blockIndex) {
+          auto block = decoder.dataAtBlockIndex(blockIndex);
+          if (!block) {
+            continue;
           }
-          good.push_back({key, int(p.Time) + int(p.IndexOfMaxDigitizerSample)});
+          auto header = block->GetHeader();
+          const int link = int(header->GetLinkID());
+          ++eventHits.nBlocks;
+          hBlocks_->Fill(dtcId, link);
+          const long long blockTag = (long long)header->GetEventWindowTag().GetEventWindowTag(true);
+          hBlockTagShift_->Fill(dtcId * kNLinks + link, std::clamp<long long>(blockTag - subEventTag, -4, 4));
+
+          auto hits = decoder.GetCalorimeterHitData(blockIndex);
+          if (!hits) {
+            continue;
+          }
+          for (const auto& hit : *hits) {
+            checkHit(hit, subEventTag, sliceTime, eventHits);
+          }
         }
       }
     }
+    return eventHits;
   }
-  const double tsec = (evTag - tag0_) * winUs_ * 1e-6;
-  hRateFine_->Fill(tsec, 0); hRateFine_->Fill(tsec, 5, double(nAll - (int)good.size()));
-  hEvSlice_->Fill(tmin); hNHits_->Fill(nAll); hNBlocks_->Fill(nBlocks); if (anyBad) hEvFailSlice_->Fill(tmin);
-  const bool laser = nAll >= laserMin_;
-  if (laser) { hLaserSlice_->Fill(tmin); hRateFine_->Fill(tsec, 1); }
-  std::map<int, int> peakOf; for (auto& h : good) peakOf[h.key] = h.peak;
-  if (laser && !peakOf.empty()) {
-    std::vector<int> pk; for (auto& kv : peakOf) pk.push_back(kv.second);
-    std::nth_element(pk.begin(), pk.begin() + pk.size() / 2, pk.end()); const int med = pk[pk.size() / 2];
-    std::map<int, std::vector<int>> byBoard; for (auto& kv : peakOf) byBoard[kv.first / NC].push_back(kv.second - med);
-    for (auto& [b, v] : byBoard) { std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end()); hBoardJump_->Fill(b, tmin, std::clamp(v[v.size() / 2], -20, 20)); }
+
+  // Checks of one hit. Error codes and flags are counted for every hit; the per-channel histograms only for valid
+  // channel keys; waveform, pedestal and the list of good hits only for the hits kept by isHitGood.
+  void MC2RawCheck::checkHit(const CaloHitData& hit, long long subEventTag, double sliceTime, EventHits& eventHits) {
+    ++eventHits.nHits;
+    const auto& packet = hit.first;
+    const auto& waveform = hit.second;
+    const int key = int(packet.BoardID) * kNChannelsPerBoard + int(packet.ChannelID);
+    const int errorCode = int(daqUtilities_.isHitGood(hit));
+    const int flags = int(packet.ErrorFlags);
+
+    hErrTot_->Fill(errorCode);
+    hErrSlice_->Fill(sliceTime, errorCode);
+    hFlagsTot_->Fill(flags);
+    if (errorCode) {
+      eventHits.anyBadHit = true;
+    }
+    for (int bit = 0; bit < 4; ++bit) {
+      if (flags & (1 << bit)) {
+        hFlagBitSlice_->Fill(sliceTime, bit);
+      }
+    }
+    if (key < 0 || key >= kNKeys) {
+      return;
+    }
+
+    hErr_->Fill(key, errorCode);
+    hFlags_->Fill(key, flags);
+    hDet_->Fill(key, int(packet.DetectorID));
+    for (int bit = 0; bit < 4; ++bit) {
+      if (flags & (1 << bit)) {
+        (errorCode ? hFlagBitDropped_ : hFlagBitKept_)->Fill(key, bit);
+      }
+    }
+
+    // in-payload tag (16 bits) minus the sub-event tag, wrapped to [-32768, 32768]
+    int tagShift = int(packet.InPayloadEventWindowTag) - int(subEventTag & 0xFFFF);
+    if (tagShift > 32768) {
+      tagShift -= 65536;
+    }
+    if (tagShift < -32768) {
+      tagShift += 65536;
+    }
+    hHitTagShift_->Fill(key, std::clamp(tagShift, -4, 4));
+
+    if (errorCode) {
+      return;
+    }
+
+    hNSamp_->Fill(key, waveform.size());
+    hPeakIdx_->Fill(packet.IndexOfMaxDigitizerSample);
+    int maxSample = 0;
+    for (auto sample : waveform) {
+      maxSample = std::max<int>(maxSample, sample);
+    }
+    if (maxSample >= satADC_) {
+      hSat_->Fill(key);
+    }
+    if ((int)waveform.size() > nPedSamples_) {
+      fillPedestal(key, packet, waveform, sliceTime);
+    }
+    eventHits.goodHits.push_back({key, int(packet.Time) + int(packet.IndexOfMaxDigitizerSample)});
   }
-  std::map<int, int> peakOfOffline; for (auto& kv : peakOf) { const int off = int(hKeyOffline_->GetBinContent(kv.first + 1)) - 1; if (off >= 0) peakOfOffline[off] = kv.second; }
-  for (auto& kv : peakOf) {
-    (laser ? hOccLaser_ : hOcc_)->Fill(kv.first); if (!laser) hOccSlice_->Fill(kv.first, tmin);
-    if (!laser) { const int o_ = int(hKeyOffline_->GetBinContent(kv.first + 1)) - 1; const bool ly = hDet_->GetBinContent(kv.first + 1, 2) > 0;
-      if (ly) hRateFine_->Fill(tsec, 4); else if (o_ >= 0) hRateFine_->Fill(tsec, (o_ / 2) >= 674 ? 3 : 2); }
-    if (laser) continue;
-    const int off = int(hKeyOffline_->GetBinContent(kv.first + 1)) - 1; if (off < 0) continue;
-    auto it = peakOfOffline.find(off ^ 1);   // the other SiPM of the crystal: offline ids 2c and 2c + 1
-    if (it != peakOfOffline.end()) { hPartner_->Fill(kv.first); hPartnerDt_->Fill(kv.first, std::clamp(kv.second - it->second, -300, 300)); }
+
+  // Pedestal = mean of the first nPed samples, its variance, and the Baseline field of the packet.
+  void MC2RawCheck::fillPedestal(int key, const CalorimeterDataDecoder::CalorimeterHitDataPacket& packet,
+                                 const std::vector<uint16_t>& waveform, double sliceTime) {
+    double sum = 0;
+    double sumOfSquares = 0;
+    for (int i = 0; i < nPedSamples_; ++i) {
+      sum += waveform[i];
+      sumOfSquares += double(waveform[i]) * waveform[i];
+    }
+    const double mean = sum / nPedSamples_;
+    const double variance = std::max(0., sumOfSquares / nPedSamples_ - mean * mean);
+
+    hBaseDiff_->Fill(key, double(packet.Baseline) - mean);
+    hBaseline_->Fill(int(packet.Baseline));
+    hPedSum_->Fill(key, sliceTime, mean);
+    hPed2Sum_->Fill(key, sliceTime, mean * mean);
+    hNoiseSum_->Fill(key, sliceTime, variance);
+    hPedN_->Fill(key, sliceTime);
   }
-}
+
+  // Per-event counts: events, dropped hits, hits, blocks, events with bad hits, laser events. Returns true for a laser
+  // event (at least laserMinHits hits, good or bad).
+  bool MC2RawCheck::fillEventCounts(const EventHits& eventHits, double sliceTime, double secondsFromStart) {
+    hRateFine_->Fill(secondsFromStart, 0);
+    hRateFine_->Fill(secondsFromStart, 5, double(eventHits.nHits - (int)eventHits.goodHits.size()));
+    hEvSlice_->Fill(sliceTime);
+    hNHits_->Fill(eventHits.nHits);
+    hNBlocks_->Fill(eventHits.nBlocks);
+    if (eventHits.anyBadHit) {
+      hEvFailSlice_->Fill(sliceTime);
+    }
+
+    const bool isLaser = eventHits.nHits >= laserMinHits_;
+    if (isLaser) {
+      hLaserSlice_->Fill(sliceTime);
+      hRateFine_->Fill(secondsFromStart, 1);
+    }
+    return isLaser;
+  }
+
+  // Laser events: for every board, the median over its channels of (peak sample - median peak sample of the event).
+  // A board that jumps by whole samples shows up as an entry away from 0.
+  void MC2RawCheck::fillBoardJumps(const std::map<int, int>& peakByKey, double sliceTime) {
+    std::vector<int> peaks;
+    for (const auto& [key, peak] : peakByKey) {
+      peaks.push_back(peak);
+    }
+    std::nth_element(peaks.begin(), peaks.begin() + peaks.size() / 2, peaks.end());
+    const int eventMedian = peaks[peaks.size() / 2];
+
+    std::map<int, std::vector<int>> shiftsByBoard;
+    for (const auto& [key, peak] : peakByKey) {
+      shiftsByBoard[key / kNChannelsPerBoard].push_back(peak - eventMedian);
+    }
+    for (auto& [board, shifts] : shiftsByBoard) {
+      std::nth_element(shifts.begin(), shifts.begin() + shifts.size() / 2, shifts.end());
+      hBoardJump_->Fill(board, sliceTime, std::clamp(shifts[shifts.size() / 2], -20, 20));
+    }
+  }
+
+  // Occupancy per channel (laser and non-laser events), and for non-laser events: occupancy per slice, good-hit rates
+  // per category (LYSO, disk 0, disk 1) and the pairs of SiPMs of the same crystal.
+  void MC2RawCheck::fillOccupancyAndPartners(const std::map<int, int>& peakByKey, bool isLaser, double sliceTime,
+                                             double secondsFromStart) {
+    // peak sample per offline SiPM id
+    std::map<int, int> peakByOfflineId;
+    for (const auto& [key, peak] : peakByKey) {
+      const int offlineId = offlineIdOfKey(key);
+      if (offlineId >= 0) {
+        peakByOfflineId[offlineId] = peak;
+      }
+    }
+
+    for (const auto& [key, peak] : peakByKey) {
+      (isLaser ? hOccLaser_ : hOcc_)->Fill(key);
+      if (isLaser) {
+        continue;
+      }
+      hOccSlice_->Fill(key, sliceTime);
+
+      // rate category: LYSO (a channel that had hits with DetectorID 1, so far in the job), otherwise the disk
+      // (offline crystal id >= 674 on disk 1)
+      const int offlineId = offlineIdOfKey(key);
+      const bool isLyso = hDet_->GetBinContent(key + 1, 2) > 0;
+      if (isLyso) {
+        hRateFine_->Fill(secondsFromStart, 4);
+      } else if (offlineId >= 0) {
+        hRateFine_->Fill(secondsFromStart, (offlineId / 2) >= 674 ? 3 : 2);
+      }
+
+      // the other SiPM of the crystal: offline ids 2c and 2c + 1
+      if (offlineId < 0) {
+        continue;
+      }
+      const auto partner = peakByOfflineId.find(offlineId ^ 1);
+      if (partner != peakByOfflineId.end()) {
+        hPartner_->Fill(key);
+        hPartnerDt_->Fill(key, std::clamp(peak - partner->second, -300, 300));
+      }
+    }
+  }
+
 }  // namespace mu2e
+
 DEFINE_ART_MODULE(mu2e::MC2RawCheck)

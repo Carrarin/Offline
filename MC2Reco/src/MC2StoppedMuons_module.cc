@@ -1,34 +1,77 @@
-// MC2StoppedMuons: muons that stop in the calorimeter and their delayed deposits (decay electrons of mu+, Michel spectrum),
-// on calibrated CaloHits. Port of the mc2tools macro cosmic_delayed_coincidence.C (same selection, same tree), so that
-// michel_scale.py reads the output as it is; in addition the Michel spectra per disk and the lifetime fit at the end of the job.
 //
-// Crystal : CaloHit with both SiPMs (nSiPMs == 2) and the amplitude of each SiPM >= minAmp ADC counts (energy / CalCalib
-//           ADC2MeV); time = hit time (our template, after the time offsets of the conditions); amplitude = mean of the two SiPM
-//           amplitudes; energy = CaloHit energy (MeV, mean of the two SiPMs, from the energy table of the conditions);
-//           position = crystal x, y (tracker frame of the Offline geometry). More than one hit per crystal per event is allowed.
-// Cluster : crystals in time order, a new cluster after a gap > clusGap ns.
-// Pair    : prompt cluster P and later cluster D of the same event window, dt = t_D - t_P in [dtMin, dtMax] us, P starting after
-//           tEdge us from the window start and dtMax before its end (window length windowNs): full acceptance in dt;
-//           near (cls 1) = some crystal of D within dNear mm (same disk) of some crystal of P; far (cls 2) = all crystals of D farther
-//           than dFar mm (accidental control). Same branches as mc2tools pairs.root (entry = art event number).
-// Michel  : per disk of the delayed cluster, energy eD of the near pairs with dt in [michelDtMin, dtMax] us (mu+ only: the mu- are
-//           captured in < 0.1 us in CsI), and of the far pairs; accidentals subtracted with k = near/far in dt > dtNorm us (flat).
-// Lifetime: binned Poisson likelihood fit N0 exp(-t/tau) + B of the near pairs, dt in [fitMin, fitMax] us, all and per disk;
-//           results printed and written to summaryFile.
+// MC2StoppedMuons: cosmic muons that stop in the calorimeter and their delayed deposits (decay electrons of the mu+,
+// Michel spectrum), on calibrated CaloHits.
+//
+// It is a port of the mc2tools macro cosmic_delayed_coincidence.C (same selection, same tree), so that
+// michel_scale.py reads its output as it is; in addition it fills the Michel spectra per disk and fits the lifetime
+// at the end of the job.
+//
+// Input: CaloHitCollection (caloHitCollection, calibrated hits) and the CalCalib conditions (ADC2MeV).
+//
+// Definitions:
+//   Crystal  : CaloHit with both SiPMs (nSiPMs == 2) and the amplitude of each SiPM >= minAmp ADC counts (energy /
+//              CalCalib ADC2MeV);
+//                time      = hit time (our template, after the time offsets of the conditions);
+//                amplitude = mean of the two SiPM amplitudes;
+//                energy    = CaloHit energy (MeV, mean of the two SiPMs, from the energy table of the conditions);
+//                position  = crystal x, y (tracker frame of the Offline geometry).
+//              More than one hit per crystal per event is allowed.
+//   Cluster  : crystals in time order; a new cluster starts after a gap > clusGap ns.
+//   Pair     : prompt cluster P and later cluster D of the same event window, dt = t_D - t_P in [dtMin, dtMax] us
+//              (times of the first crystal of each cluster). P must start more than tEdge us after the window start and
+//              more than dtMax before its end (window length windowNs), so that the acceptance in dt is full.
+//                near (cls 1) = some crystal of D within dNear mm (same disk) of some crystal of P;
+//                far  (cls 2) = all crystals of D farther than dFar mm (accidental control);
+//              pairs in between are dropped.
+//   Michel   : per disk of the delayed cluster, energy eD of the near pairs with dt in [michelDtMin, dtMax] us
+//              (mu+ only: the mu- are captured in < 0.1 us in CsI), and of the far pairs; the accidentals are
+//              subtracted with k = near/far in dt > dtNorm us (where the delayed rate is flat).
+//   Lifetime : binned Poisson likelihood fit N0 exp(-t/tau) + B of the near pairs, dt in [fitMin, fitMax] us, all disks
+//              and per disk.
+//
+// Output:
+//   TTree "pairs", one entry per near or far pair (same branches as mc2tools pairs.root):
+//     entry          art event number (not the tree entry)
+//     dt             delay t_D - t_P [us]
+//     dmin           minimum distance between a crystal of D and a crystal of P on the same disk [mm] (1e9 if none)
+//     tP             time of the prompt cluster [us]
+//     aP, aD, aDmax  sum of the crystal amplitudes of P, of D, largest crystal amplitude of D [ADC]
+//     eP, eD, eDmax  same for the energies [MeV]
+//     nP, nD         number of crystals of P and of D
+//     disk           disk of the first crystal of D
+//     diskP          disk of the crystals of P (2 if on both disks)
+//     sameCry        1 if a crystal of D is also a crystal of P
+//     cls            1 near, 2 far
+//     nCl            number of clusters in the event
+//     xD, yD         amplitude-weighted centroid of D [mm]
+//     xP, yP         amplitude-weighted centroid of P [mm]
+//     xLo, yLo       crystal of P with the lowest y; xHi, yHi the one with the highest y [mm]
+//   Histograms:
+//     hDtNear_<all|disk0|disk1>, hDtFar_<...>  delay of the near / far pairs (all, per disk of D)
+//     hMichelNear_disk<d>, hMichelFar_disk<d>  eD of the near / far pairs with dt >= michelDtMin
+//     hMichel_disk<d>                          near - k far (filled at the end of the job)
+//     hNorm_disk<d>                            near (bin 0) and far (bin 1) pairs with dt >= dtNorm, for k
+//   Text file summaryFile (also printed): counters, cuts, lifetime fits, Michel spectra after the subtraction.
+//
+// Steps per event: select the crystals, sort them in time, build the clusters, then for every prompt cluster in
+// acceptance look at the later clusters, classify each pair (near / far), fill the tree and the histograms.
+//
 #include "art/Framework/Core/EDAnalyzer.h"
 #include "art/Framework/Core/ModuleMacros.h"
 #include "art/Framework/Principal/Event.h"
 #include "art_root_io/TFileService.h"
 #include "fhiclcpp/types/Atom.h"
-#include "Offline/GeometryService/inc/GeomHandle.hh"
-#include "Offline/CalorimeterGeom/inc/Calorimeter.hh"
+
 #include "Offline/CaloConditions/inc/CalCalib.hh"
+#include "Offline/CalorimeterGeom/inc/Calorimeter.hh"
+#include "Offline/GeometryService/inc/GeomHandle.hh"
 #include "Offline/ProditionsService/inc/ProditionsHandle.hh"
 #include "Offline/RecoDataProducts/inc/CaloHit.hh"
 #include "Offline/RecoDataProducts/inc/CaloRecoDigi.hh"
 #include "TF1.h"
 #include "TH1F.h"
 #include "TTree.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -36,127 +79,500 @@
 #include <vector>
 
 namespace mu2e {
+
   class MC2StoppedMuons : public art::EDAnalyzer {
     public:
       struct Config {
-        using Name = fhicl::Name; using Comment = fhicl::Comment;
-        fhicl::Atom<art::InputTag> hitTag     { Name("caloHitCollection"), Comment("calibrated calorimeter hits"), "MC2CaloHitMaker" };
-        fhicl::Atom<double> minAmp      { Name("minAmp"), Comment("min amplitude of each SiPM [ADC]"), 100. };
-        fhicl::Atom<double> clusGap     { Name("clusGap"), Comment("time gap that starts a new cluster [ns]"), 30. };
-        fhicl::Atom<double> dtMin       { Name("dtMin"), Comment("min delay [us]"), 0.1 };
-        fhicl::Atom<double> dtMax       { Name("dtMax"), Comment("max delay [us]"), 20. };
-        fhicl::Atom<double> tEdge       { Name("tEdge"), Comment("min prompt time from the window start [us]"), 1. };
-        fhicl::Atom<double> windowNs    { Name("windowNs"), Comment("event window length [ns]"), 97495. };
-        fhicl::Atom<double> dNear       { Name("dNear"), Comment("near: max distance prompt-delayed crystal [mm]"), 80. };
-        fhicl::Atom<double> dFar        { Name("dFar"), Comment("far: min distance [mm]"), 300. };
-        fhicl::Atom<double> michelDtMin { Name("michelDtMin"), Comment("min delay for the Michel spectra [us]"), 1. };
-        fhicl::Atom<double> dtNorm      { Name("dtNorm"), Comment("near/far normalisation for dt > dtNorm [us]"), 15. };
-        fhicl::Atom<double> fitMin      { Name("fitMin"), Comment("lifetime fit from [us]"), 1. };
-        fhicl::Atom<double> fitMax      { Name("fitMax"), Comment("lifetime fit to [us]"), 20. };
-        fhicl::Atom<std::string> summaryFile { Name("summaryFile"), Comment("text summary"), "stopped_muons_summary.txt" };
+        using Name = fhicl::Name;
+        using Comment = fhicl::Comment;
+
+        // Input
+        fhicl::Atom<art::InputTag> hitTag{Name("caloHitCollection"), Comment("calibrated calorimeter hits"),
+            "MC2CaloHitMaker"};
+
+        // Crystals and clusters
+        fhicl::Atom<double> minAmp{Name("minAmp"), Comment("min amplitude of each SiPM [ADC]"), 100.};
+        fhicl::Atom<double> clusGap{Name("clusGap"), Comment("time gap that starts a new cluster [ns]"), 30.};
+
+        // Pairs
+        fhicl::Atom<double> dtMin{Name("dtMin"), Comment("min delay [us]"), 0.1};
+        fhicl::Atom<double> dtMax{Name("dtMax"), Comment("max delay [us]"), 20.};
+        fhicl::Atom<double> tEdge{Name("tEdge"), Comment("min prompt time from the window start [us]"), 1.};
+        fhicl::Atom<double> windowNs{Name("windowNs"), Comment("event window length [ns]"), 97495.};
+        fhicl::Atom<double> dNear{Name("dNear"), Comment("near: max distance prompt-delayed crystal [mm]"), 80.};
+        fhicl::Atom<double> dFar{Name("dFar"), Comment("far: min distance [mm]"), 300.};
+
+        // Michel spectra and accidental subtraction
+        fhicl::Atom<double> michelDtMin{Name("michelDtMin"), Comment("min delay for the Michel spectra [us]"), 1.};
+        fhicl::Atom<double> dtNorm{Name("dtNorm"), Comment("near/far normalisation for dt > dtNorm [us]"), 15.};
+
+        // Lifetime fit and summary
+        fhicl::Atom<double> fitMin{Name("fitMin"), Comment("lifetime fit from [us]"), 1.};
+        fhicl::Atom<double> fitMax{Name("fitMax"), Comment("lifetime fit to [us]"), 20.};
+        fhicl::Atom<std::string> summaryFile{Name("summaryFile"), Comment("text summary"),
+            "stopped_muons_summary.txt"};
       };
       using Parameters = art::EDAnalyzer::Table<Config>;
-      explicit MC2StoppedMuons(const Parameters& conf);
+
+      explicit MC2StoppedMuons(const Parameters& config);
       void beginJob() override;
       void analyze(const art::Event& event) override;
       void endJob() override;
+
     private:
-      struct Cry { int disk; float x, y; double t, a, e; int id; };
-      art::InputTag tag_; double minAmp_, gap_, dtMin_, dtMax_, tEdge_, win_, dNear_, dFar_, mDt_, dtNorm_, fitMin_, fitMax_; std::string sumFile_;
-      ProditionsHandle<CalCalib> calibH_;
-      TTree* t_ = nullptr;
-      long long entry_; float dt_, dmin_, tP_, aP_, aD_, aDmax_, xD_, yD_, xLo_, yLo_, xHi_, yHi_, xP_, yP_, eP_, eD_, eDmax_; int nP_, nD_, disk_, same_, cls_, nCl_, diskP_;
-      TH1F *hDt_[3][2] = {{nullptr}}, *hE_[2][2] = {{nullptr}}, *hESub_[2] = {nullptr, nullptr}, *hDtNorm_[2] = {nullptr, nullptr};
-      long nEv_ = 0, nCry_ = 0, nClus_ = 0, nPrompt_ = 0;
+      // A selected crystal (one CaloHit)
+      struct CrystalHit {
+        int disk;
+        float x, y;          // tracker frame [mm]
+        double time;         // [ns]
+        double amplitude;    // mean of the two SiPMs [ADC]
+        double energy;       // [MeV]
+        int crystalId;
+      };
+
+      // A cluster: crystals [begin, end) of the time-ordered crystal list
+      struct Cluster {
+        int begin;
+        int end;
+      };
+
+      // Sums over the prompt cluster
+      struct PromptSums {
+        double amplitude = 0;
+        double energy = 0;
+      };
+
+      // Sums over the delayed cluster and its distance to the prompt cluster
+      struct DelayedSums {
+        double minDistance = 1e9;
+        double amplitude = 0;
+        double amplitudeMax = 0;
+        double energy = 0;
+        double energyMax = 0;
+        int sameCrystal = 0;
+      };
+
+      // Branches of the "pairs" tree (names as the branch names)
+      struct PairBranches {
+        long long entry;
+        float dt, dmin, tP, aP, aD, aDmax, xD, yD, xLo, yLo, xHi, yHi, xP, yP, eP, eD, eDmax;
+        int nP, nD, disk, sameCry, cls, nCl, diskP;
+      };
+
+      static constexpr int kNear = 0;   // second index of the delay and Michel histograms
+      static constexpr int kFar = 1;
+
+      std::vector<CrystalHit> selectCrystals(const art::Event& event);
+      bool meanSiPMAmplitude(const CaloHit& hit, const CalCalib& calib, double& meanAmplitude) const;
+      std::vector<Cluster> buildClusters(const std::vector<CrystalHit>& crystals) const;
+      bool promptInAcceptance(double promptTime) const;
+      PromptSums sumPrompt(const std::vector<CrystalHit>& crystals, const Cluster& prompt) const;
+      DelayedSums sumDelayed(const std::vector<CrystalHit>& crystals, const Cluster& delayed,
+                             const Cluster& prompt) const;
+      int pairClass(double minDistance) const;
+      void fillPairTree(const art::Event& event, const std::vector<CrystalHit>& crystals,
+                        const std::vector<Cluster>& clusters, size_t promptIndex, size_t delayedIndex,
+                        double dt, double promptTime, const PromptSums& prompt, const DelayedSums& delayed,
+                        int disk, int cls);
+      void fillHistograms(int cls, int disk, double dt, double delayedEnergy);
+      void fitLifetimes();
+      void subtractAccidentals();
+      template <typename... Args> void report(const char* format, Args... args);
+
+      // Input
+      art::InputTag hitTag_;
+      ProditionsHandle<CalCalib> calibHandle_;
+
+      // Parameters
+      double minAmp_;
+      double clusterGap_;
+      double dtMin_;
+      double dtMax_;
+      double tEdge_;
+      double windowNs_;
+      double dNear_;
+      double dFar_;
+      double michelDtMin_;
+      double dtNorm_;
+      double fitMin_;
+      double fitMax_;
+      std::string summaryFileName_;
+
+      // Output
+      TTree* pairTree_ = nullptr;
+      PairBranches pair_;
+      TH1F* hDelay_[3][2] = {{nullptr}};               // [all, disk 0, disk 1][near, far]
+      TH1F* hMichel_[2][2] = {{nullptr}};              // [disk][near, far]
+      TH1F* hMichelSubtracted_[2] = {nullptr, nullptr};   // [disk]: near - k far
+      TH1F* hNormalisation_[2] = {nullptr, nullptr};      // [disk]: near, far pairs with dt >= dtNorm
+      FILE* summaryFile_ = nullptr;
+
+      // Counters
+      long nEvents_ = 0;
+      long nCrystals_ = 0;
+      long nClusters_ = 0;
+      long nPromptInAcceptance_ = 0;
   };
 
-  MC2StoppedMuons::MC2StoppedMuons(const Parameters& c) : art::EDAnalyzer(c), tag_(c().hitTag()), minAmp_(c().minAmp()), gap_(c().clusGap()),
-    dtMin_(c().dtMin()), dtMax_(c().dtMax()), tEdge_(c().tEdge()), win_(c().windowNs()), dNear_(c().dNear()), dFar_(c().dFar()), mDt_(c().michelDtMin()),
-    dtNorm_(c().dtNorm()), fitMin_(c().fitMin()), fitMax_(c().fitMax()), sumFile_(c().summaryFile()) { consumes<CaloHitCollection>(tag_); }
+  MC2StoppedMuons::MC2StoppedMuons(const Parameters& config) :
+    art::EDAnalyzer(config),
+    hitTag_(config().hitTag()),
+    minAmp_(config().minAmp()),
+    clusterGap_(config().clusGap()),
+    dtMin_(config().dtMin()),
+    dtMax_(config().dtMax()),
+    tEdge_(config().tEdge()),
+    windowNs_(config().windowNs()),
+    dNear_(config().dNear()),
+    dFar_(config().dFar()),
+    michelDtMin_(config().michelDtMin()),
+    dtNorm_(config().dtNorm()),
+    fitMin_(config().fitMin()),
+    fitMax_(config().fitMax()),
+    summaryFileName_(config().summaryFile())
+  {
+    consumes<CaloHitCollection>(hitTag_);
+  }
 
   void MC2StoppedMuons::beginJob() {
     art::ServiceHandle<art::TFileService> tfs;
-    t_ = tfs->make<TTree>("pairs", "delayed coincidences (branches of mc2tools cosmic_delayed_coincidence.C)");
-    t_->Branch("entry", &entry_); t_->Branch("dt", &dt_); t_->Branch("dmin", &dmin_); t_->Branch("tP", &tP_); t_->Branch("aP", &aP_);
-    t_->Branch("aD", &aD_); t_->Branch("aDmax", &aDmax_); t_->Branch("nP", &nP_); t_->Branch("nD", &nD_); t_->Branch("disk", &disk_); t_->Branch("sameCry", &same_);
-    t_->Branch("cls", &cls_); t_->Branch("nCl", &nCl_); t_->Branch("xD", &xD_); t_->Branch("yD", &yD_); t_->Branch("xLo", &xLo_); t_->Branch("yLo", &yLo_);
-    t_->Branch("xHi", &xHi_); t_->Branch("yHi", &yHi_); t_->Branch("xP", &xP_); t_->Branch("yP", &yP_); t_->Branch("diskP", &diskP_);
-    t_->Branch("eP", &eP_); t_->Branch("eD", &eD_); t_->Branch("eDmax", &eDmax_);
-    const char* cn[3] = {"all", "disk0", "disk1"};
+
+    pairTree_ = tfs->make<TTree>("pairs", "delayed coincidences (branches of mc2tools cosmic_delayed_coincidence.C)");
+    pairTree_->Branch("entry", &pair_.entry);
+    pairTree_->Branch("dt", &pair_.dt);
+    pairTree_->Branch("dmin", &pair_.dmin);
+    pairTree_->Branch("tP", &pair_.tP);
+    pairTree_->Branch("aP", &pair_.aP);
+    pairTree_->Branch("aD", &pair_.aD);
+    pairTree_->Branch("aDmax", &pair_.aDmax);
+    pairTree_->Branch("nP", &pair_.nP);
+    pairTree_->Branch("nD", &pair_.nD);
+    pairTree_->Branch("disk", &pair_.disk);
+    pairTree_->Branch("sameCry", &pair_.sameCry);
+    pairTree_->Branch("cls", &pair_.cls);
+    pairTree_->Branch("nCl", &pair_.nCl);
+    pairTree_->Branch("xD", &pair_.xD);
+    pairTree_->Branch("yD", &pair_.yD);
+    pairTree_->Branch("xLo", &pair_.xLo);
+    pairTree_->Branch("yLo", &pair_.yLo);
+    pairTree_->Branch("xHi", &pair_.xHi);
+    pairTree_->Branch("yHi", &pair_.yHi);
+    pairTree_->Branch("xP", &pair_.xP);
+    pairTree_->Branch("yP", &pair_.yP);
+    pairTree_->Branch("diskP", &pair_.diskP);
+    pairTree_->Branch("eP", &pair_.eP);
+    pairTree_->Branch("eD", &pair_.eD);
+    pairTree_->Branch("eDmax", &pair_.eDmax);
+
+    const char* selectionName[3] = {"all", "disk0", "disk1"};
     for (int k = 0; k < 3; ++k) {
-      hDt_[k][0] = tfs->make<TH1F>(Form("hDtNear_%s", cn[k]), Form("near pairs, %s;delay [#mus];pairs / 0.2 #mus", cn[k]), 100, 0, 20);
-      hDt_[k][1] = tfs->make<TH1F>(Form("hDtFar_%s", cn[k]), Form("far pairs, %s;delay [#mus];pairs / 0.2 #mus", cn[k]), 100, 0, 20);
+      hDelay_[k][kNear] = tfs->make<TH1F>(Form("hDtNear_%s", selectionName[k]),
+          Form("near pairs, %s;delay [#mus];pairs / 0.2 #mus", selectionName[k]), 100, 0, 20);
+      hDelay_[k][kFar] = tfs->make<TH1F>(Form("hDtFar_%s", selectionName[k]),
+          Form("far pairs, %s;delay [#mus];pairs / 0.2 #mus", selectionName[k]), 100, 0, 20);
     }
-    for (int d = 0; d < 2; ++d) {
-      hE_[d][0] = tfs->make<TH1F>(Form("hMichelNear_disk%d", d), Form("disk %d, near pairs, delay > %.1f #mus;delayed energy [MeV];pairs / 2 MeV", d, mDt_), 50, 0, 100);
-      hE_[d][1] = tfs->make<TH1F>(Form("hMichelFar_disk%d", d), Form("disk %d, far pairs, delay > %.1f #mus;delayed energy [MeV];pairs / 2 MeV", d, mDt_), 50, 0, 100);
-      hESub_[d] = tfs->make<TH1F>(Form("hMichel_disk%d", d), Form("disk %d, near - k far (accidentals subtracted);delayed energy [MeV];pairs / 2 MeV", d), 50, 0, 100);
-      hDtNorm_[d] = tfs->make<TH1F>(Form("hNorm_disk%d", d), Form("disk %d: near and far pairs with delay > %.0f #mus;0 near, 1 far;pairs", d, dtNorm_), 2, -0.5, 1.5);
+    for (int disk = 0; disk < 2; ++disk) {
+      hMichel_[disk][kNear] = tfs->make<TH1F>(Form("hMichelNear_disk%d", disk),
+          Form("disk %d, near pairs, delay > %.1f #mus;delayed energy [MeV];pairs / 2 MeV", disk, michelDtMin_),
+          50, 0, 100);
+      hMichel_[disk][kFar] = tfs->make<TH1F>(Form("hMichelFar_disk%d", disk),
+          Form("disk %d, far pairs, delay > %.1f #mus;delayed energy [MeV];pairs / 2 MeV", disk, michelDtMin_),
+          50, 0, 100);
+      hMichelSubtracted_[disk] = tfs->make<TH1F>(Form("hMichel_disk%d", disk),
+          Form("disk %d, near - k far (accidentals subtracted);delayed energy [MeV];pairs / 2 MeV", disk),
+          50, 0, 100);
+      hNormalisation_[disk] = tfs->make<TH1F>(Form("hNorm_disk%d", disk),
+          Form("disk %d: near and far pairs with delay > %.0f #mus;0 near, 1 far;pairs", disk, dtNorm_),
+          2, -0.5, 1.5);
     }
   }
 
   void MC2StoppedMuons::analyze(const art::Event& event) {
-    ++nEv_;
-    const Calorimeter& cal = *GeomHandle<Calorimeter>(); const CalCalib& calib = calibH_.get(event.id());
-    const auto& hits = *event.getValidHandle<CaloHitCollection>(tag_);
-    std::vector<Cry> cr;
-    for (const auto& h : hits) {
-      if (h.nSiPMs() < 2) continue;
-      double a = 0; bool ok = true; int n = 0;
-      for (const auto& rd : h.recoCaloDigis()) { const double a2m = calib.ADC2MeV(rd->SiPMID()); const double am = a2m > 0 ? rd->energyDep() / a2m : 0;
-        if (am < minAmp_) { ok = false; break; }
-        a += am; ++n; }
-      if (!ok || n == 0) continue;
-      const auto& c = cal.crystal(h.crystalID()); const auto p = cal.mu2eToTracker(c.position());
-      cr.push_back({int(c.diskID()), float(p.x()), float(p.y()), h.time(), a / n, h.energyDep(), h.crystalID()});
+    ++nEvents_;
+
+    // 1. crystals, in time order
+    std::vector<CrystalHit> crystals = selectCrystals(event);
+    nCrystals_ += crystals.size();
+    if (crystals.size() < 2) {
+      return;
     }
-    nCry_ += cr.size(); if (cr.size() < 2) return;
-    std::sort(cr.begin(), cr.end(), [](const Cry& p, const Cry& q) { return p.t < q.t; });
-    std::vector<std::pair<int, int>> cl; int s0 = 0;
-    for (size_t h = 1; h <= cr.size(); ++h) if (h == cr.size() || cr[h].t - cr[h - 1].t > gap_) { cl.push_back({s0, (int)h}); s0 = h; }
-    nClus_ += cl.size(); if (cl.size() < 2) return;
-    for (size_t p = 0; p < cl.size(); ++p) {
-      const double tP = cr[cl[p].first].t; if (tP < tEdge_ * 1e3 || tP > win_ - dtMax_ * 1e3) continue; ++nPrompt_;
-      double aP = 0, eP = 0; for (int h = cl[p].first; h < cl[p].second; ++h) { aP += cr[h].a; eP += cr[h].e; }
-      for (size_t d = p + 1; d < cl.size(); ++d) {
-        const double dt = (cr[cl[d].first].t - tP) * 1e-3; if (dt < dtMin_) continue; if (dt > dtMax_) break;
-        double dmin = 1e9, aD = 0, aDm = 0, eD = 0, eDm = 0; int same = 0; const int disk = cr[cl[d].first].disk;
-        for (int h = cl[d].first; h < cl[d].second; ++h) { aD += cr[h].a; aDm = std::max(aDm, cr[h].a); eD += cr[h].e; eDm = std::max(eDm, cr[h].e);
-          for (int g = cl[p].first; g < cl[p].second; ++g) { if (cr[h].disk != cr[g].disk) continue; dmin = std::min(dmin, double(std::hypot(cr[h].x - cr[g].x, cr[h].y - cr[g].y))); if (cr[h].id == cr[g].id) same = 1; } }
-        const int cls = dmin <= dNear_ ? 1 : (dmin > dFar_ ? 2 : 0); if (!cls) continue;
-        double sx = 0, sy = 0, sw = 0; for (int h = cl[d].first; h < cl[d].second; ++h) { sx += cr[h].a * cr[h].x; sy += cr[h].a * cr[h].y; sw += cr[h].a; }
-        int gLo = cl[p].first, gHi = cl[p].first; double px = 0, py = 0, pw = 0; std::map<int, int> nDisk;
-        for (int g = cl[p].first; g < cl[p].second; ++g) { if (cr[g].y < cr[gLo].y) gLo = g; if (cr[g].y > cr[gHi].y) gHi = g; px += cr[g].a * cr[g].x; py += cr[g].a * cr[g].y; pw += cr[g].a; nDisk[cr[g].disk]++; }
-        entry_ = event.event(); dt_ = dt; dmin_ = dmin; tP_ = tP * 1e-3; aP_ = aP; aD_ = aD; aDmax_ = aDm; nP_ = cl[p].second - cl[p].first; nD_ = cl[d].second - cl[d].first;
-        disk_ = disk; same_ = same; cls_ = cls; nCl_ = cl.size(); xD_ = sx / sw; yD_ = sy / sw; xLo_ = cr[gLo].x; yLo_ = cr[gLo].y; xHi_ = cr[gHi].x; yHi_ = cr[gHi].y;
-        xP_ = px / pw; yP_ = py / pw; diskP_ = nDisk.size() > 1 ? 2 : nDisk.begin()->first; eP_ = eP; eD_ = eD; eDmax_ = eDm; t_->Fill();
-        const int ic = cls == 1 ? 0 : 1; hDt_[0][ic]->Fill(dt); if (disk == 0 || disk == 1) hDt_[1 + disk][ic]->Fill(dt);
-        if ((disk == 0 || disk == 1) && dt >= mDt_) hE_[disk][ic]->Fill(eD);
-        if ((disk == 0 || disk == 1) && dt >= dtNorm_) hDtNorm_[disk]->Fill(ic);
+    std::sort(crystals.begin(), crystals.end(),
+              [](const CrystalHit& first, const CrystalHit& second) { return first.time < second.time; });
+
+    // 2. clusters
+    const std::vector<Cluster> clusters = buildClusters(crystals);
+    nClusters_ += clusters.size();
+    if (clusters.size() < 2) {
+      return;
+    }
+
+    // 3. pairs: every prompt cluster in acceptance with every later cluster in the delay range
+    for (size_t p = 0; p < clusters.size(); ++p) {
+      const double promptTime = crystals[clusters[p].begin].time;
+      if (!promptInAcceptance(promptTime)) {
+        continue;
+      }
+      ++nPromptInAcceptance_;
+      const PromptSums prompt = sumPrompt(crystals, clusters[p]);
+
+      for (size_t d = p + 1; d < clusters.size(); ++d) {
+        const double dt = (crystals[clusters[d].begin].time - promptTime) * 1e-3;
+        if (dt < dtMin_) {
+          continue;
+        }
+        if (dt > dtMax_) {
+          break;
+        }
+        const int disk = crystals[clusters[d].begin].disk;
+        const DelayedSums delayed = sumDelayed(crystals, clusters[d], clusters[p]);
+        const int cls = pairClass(delayed.minDistance);
+        if (!cls) {
+          continue;
+        }
+        fillPairTree(event, crystals, clusters, p, d, dt, promptTime, prompt, delayed, disk, cls);
+        fillHistograms(cls, disk, dt, delayed.energy);
       }
     }
   }
 
-  void MC2StoppedMuons::endJob() {
-    FILE* fs = fopen(sumFile_.c_str(), "w");
-    auto out = [&](const char* fmt, auto... a) { printf(fmt, a...); if (fs) fprintf(fs, fmt, a...); };
-    out("MC2StoppedMuons: events %ld, crystals %ld, clusters %ld, prompt clusters in acceptance %ld\n", nEv_, nCry_, nClus_, nPrompt_);
-    out("cuts: minAmp %.0f ADC, clusGap %.0f ns, dt %.2f-%.1f us, tEdge %.1f us, near <= %.0f mm, far > %.0f mm\n", minAmp_, gap_, dtMin_, dtMax_, tEdge_, dNear_, dFar_);
-    const char* cn[3] = {"all", "disk 0", "disk 1"};
-    for (int k = 0; k < 3; ++k) {
-      TH1F* h = hDt_[k][0]; if (h->Integral() < 20) { out("lifetime %s: too few near pairs (%.0f)\n", cn[k], h->Integral()); continue; }
-      TF1 f(Form("fexp%d", k), "[0]*exp(-x/[1])+[2]", fitMin_, fitMax_); f.SetParameters(std::max(1., h->GetBinContent(h->FindBin(fitMin_)) * 1.5), 2.2, std::max(0.1, h->GetBinContent(h->GetNbinsX())));
-      f.SetParLimits(1, 0.1, 20.); h->Fit(&f, "LQR0");
-      out("lifetime %s: tau = %.3f +- %.3f us, N0 = %.1f +- %.1f per bin, B = %.2f +- %.2f per bin, chi2/ndf = %.1f/%d, near pairs %.0f, far pairs %.0f\n", cn[k],
-          f.GetParameter(1), f.GetParError(1), f.GetParameter(0), f.GetParError(0), f.GetParameter(2), f.GetParError(2), f.GetChisquare(), f.GetNDF(), h->Integral(), hDt_[k][1]->Integral());
+  // Crystals of the event: hits with both SiPMs above minAmp.
+  std::vector<MC2StoppedMuons::CrystalHit> MC2StoppedMuons::selectCrystals(const art::Event& event) {
+    const Calorimeter& calorimeter = *GeomHandle<Calorimeter>();
+    const CalCalib& calib = calibHandle_.get(event.id());
+    const auto& hits = *event.getValidHandle<CaloHitCollection>(hitTag_);
+
+    std::vector<CrystalHit> crystals;
+    for (const auto& hit : hits) {
+      if (hit.nSiPMs() < 2) {
+        continue;
+      }
+      double meanAmplitude;
+      if (!meanSiPMAmplitude(hit, calib, meanAmplitude)) {
+        continue;
+      }
+      const auto& crystal = calorimeter.crystal(hit.crystalID());
+      const auto position = calorimeter.mu2eToTracker(crystal.position());
+      crystals.push_back({int(crystal.diskID()), float(position.x()), float(position.y()), hit.time(), meanAmplitude,
+                          hit.energyDep(), hit.crystalID()});
     }
-    for (int d = 0; d < 2; ++d) {
-      const double nn = hDtNorm_[d]->GetBinContent(1), nf = hDtNorm_[d]->GetBinContent(2), k = nf > 0 ? nn / nf : 0;
-      hESub_[d]->Add(hE_[d][0], hE_[d][1], 1., -k);
-      out("Michel disk %d: near %.0f, far %.0f (delay > %.1f us), accidental scale k = %.3f (near/far for delay > %.0f us: %.0f/%.0f); after subtraction %.0f pairs, mean %.1f MeV\n",
-          d, hE_[d][0]->Integral(), hE_[d][1]->Integral(), mDt_, k, dtNorm_, nn, nf, hESub_[d]->Integral(), hESub_[d]->GetMean());
-    }
-    if (fs) fclose(fs);
+    return crystals;
   }
+
+  // Mean amplitude [ADC] of the SiPMs of the hit (energy / ADC2MeV, 0 if ADC2MeV <= 0). False if one SiPM is below
+  // minAmp or the hit has no SiPM.
+  bool MC2StoppedMuons::meanSiPMAmplitude(const CaloHit& hit, const CalCalib& calib, double& meanAmplitude) const {
+    double amplitudeSum = 0;
+    int nSiPMs = 0;
+    for (const auto& recoDigi : hit.recoCaloDigis()) {
+      const double adc2MeV = calib.ADC2MeV(recoDigi->SiPMID());
+      const double amplitude = adc2MeV > 0 ? recoDigi->energyDep() / adc2MeV : 0;
+      if (amplitude < minAmp_) {
+        return false;
+      }
+      amplitudeSum += amplitude;
+      ++nSiPMs;
+    }
+    if (nSiPMs == 0) {
+      return false;
+    }
+    meanAmplitude = amplitudeSum / nSiPMs;
+    return true;
+  }
+
+  // Clusters of the time-ordered crystals: a new cluster after a gap > clusGap.
+  std::vector<MC2StoppedMuons::Cluster> MC2StoppedMuons::buildClusters(const std::vector<CrystalHit>& crystals) const {
+    std::vector<Cluster> clusters;
+    int clusterBegin = 0;
+    for (size_t i = 1; i <= crystals.size(); ++i) {
+      if (i == crystals.size() || crystals[i].time - crystals[i - 1].time > clusterGap_) {
+        clusters.push_back({clusterBegin, (int)i});
+        clusterBegin = i;
+      }
+    }
+    return clusters;
+  }
+
+  // The prompt cluster must start after tEdge and at least dtMax before the end of the window [ns].
+  bool MC2StoppedMuons::promptInAcceptance(double promptTime) const {
+    return !(promptTime < tEdge_ * 1e3 || promptTime > windowNs_ - dtMax_ * 1e3);
+  }
+
+  MC2StoppedMuons::PromptSums MC2StoppedMuons::sumPrompt(const std::vector<CrystalHit>& crystals,
+                                                         const Cluster& prompt) const {
+    PromptSums sums;
+    for (int i = prompt.begin; i < prompt.end; ++i) {
+      sums.amplitude += crystals[i].amplitude;
+      sums.energy += crystals[i].energy;
+    }
+    return sums;
+  }
+
+  // Sums over the delayed cluster, and its minimum distance to the prompt cluster (crystals on the same disk only).
+  MC2StoppedMuons::DelayedSums MC2StoppedMuons::sumDelayed(const std::vector<CrystalHit>& crystals,
+                                                           const Cluster& delayed, const Cluster& prompt) const {
+    DelayedSums sums;
+    for (int i = delayed.begin; i < delayed.end; ++i) {
+      const CrystalHit& delayedCrystal = crystals[i];
+      sums.amplitude += delayedCrystal.amplitude;
+      sums.amplitudeMax = std::max(sums.amplitudeMax, delayedCrystal.amplitude);
+      sums.energy += delayedCrystal.energy;
+      sums.energyMax = std::max(sums.energyMax, delayedCrystal.energy);
+      for (int j = prompt.begin; j < prompt.end; ++j) {
+        const CrystalHit& promptCrystal = crystals[j];
+        if (delayedCrystal.disk != promptCrystal.disk) {
+          continue;
+        }
+        // hypot of two floats (float), as in the mc2tools macro
+        sums.minDistance = std::min(sums.minDistance, double(std::hypot(delayedCrystal.x - promptCrystal.x,
+                                                                        delayedCrystal.y - promptCrystal.y)));
+        if (delayedCrystal.crystalId == promptCrystal.crystalId) {
+          sums.sameCrystal = 1;
+        }
+      }
+    }
+    return sums;
+  }
+
+  // 1 near, 2 far, 0 neither (pair dropped).
+  int MC2StoppedMuons::pairClass(double minDistance) const {
+    return minDistance <= dNear_ ? 1 : (minDistance > dFar_ ? 2 : 0);
+  }
+
+  void MC2StoppedMuons::fillPairTree(const art::Event& event, const std::vector<CrystalHit>& crystals,
+                                     const std::vector<Cluster>& clusters, size_t promptIndex, size_t delayedIndex,
+                                     double dt, double promptTime, const PromptSums& prompt,
+                                     const DelayedSums& delayed, int disk, int cls) {
+    const Cluster& promptCluster = clusters[promptIndex];
+    const Cluster& delayedCluster = clusters[delayedIndex];
+
+    // amplitude-weighted centroid of the delayed cluster
+    double sumAX = 0, sumAY = 0, sumA = 0;
+    for (int i = delayedCluster.begin; i < delayedCluster.end; ++i) {
+      sumAX += crystals[i].amplitude * crystals[i].x;
+      sumAY += crystals[i].amplitude * crystals[i].y;
+      sumA += crystals[i].amplitude;
+    }
+
+    // prompt cluster: lowest and highest crystal in y, amplitude-weighted centroid, disks
+    int lowest = promptCluster.begin;
+    int highest = promptCluster.begin;
+    double promptSumAX = 0, promptSumAY = 0, promptSumA = 0;
+    std::map<int, int> nCrystalsPerDisk;
+    for (int i = promptCluster.begin; i < promptCluster.end; ++i) {
+      if (crystals[i].y < crystals[lowest].y) {
+        lowest = i;
+      }
+      if (crystals[i].y > crystals[highest].y) {
+        highest = i;
+      }
+      promptSumAX += crystals[i].amplitude * crystals[i].x;
+      promptSumAY += crystals[i].amplitude * crystals[i].y;
+      promptSumA += crystals[i].amplitude;
+      nCrystalsPerDisk[crystals[i].disk]++;
+    }
+
+    pair_.entry = event.event();
+    pair_.dt = dt;
+    pair_.dmin = delayed.minDistance;
+    pair_.tP = promptTime * 1e-3;
+    pair_.aP = prompt.amplitude;
+    pair_.aD = delayed.amplitude;
+    pair_.aDmax = delayed.amplitudeMax;
+    pair_.nP = promptCluster.end - promptCluster.begin;
+    pair_.nD = delayedCluster.end - delayedCluster.begin;
+    pair_.disk = disk;
+    pair_.sameCry = delayed.sameCrystal;
+    pair_.cls = cls;
+    pair_.nCl = clusters.size();
+    pair_.xD = sumAX / sumA;
+    pair_.yD = sumAY / sumA;
+    pair_.xLo = crystals[lowest].x;
+    pair_.yLo = crystals[lowest].y;
+    pair_.xHi = crystals[highest].x;
+    pair_.yHi = crystals[highest].y;
+    pair_.xP = promptSumAX / promptSumA;
+    pair_.yP = promptSumAY / promptSumA;
+    pair_.diskP = nCrystalsPerDisk.size() > 1 ? 2 : nCrystalsPerDisk.begin()->first;
+    pair_.eP = prompt.energy;
+    pair_.eD = delayed.energy;
+    pair_.eDmax = delayed.energyMax;
+    pairTree_->Fill();
+  }
+
+  // Delay of the pair (all and per disk of the delayed cluster), Michel energy, near/far counts for the normalisation.
+  void MC2StoppedMuons::fillHistograms(int cls, int disk, double dt, double delayedEnergy) {
+    const int nearOrFar = cls == 1 ? kNear : kFar;
+    const bool knownDisk = disk == 0 || disk == 1;
+    hDelay_[0][nearOrFar]->Fill(dt);
+    if (knownDisk) {
+      hDelay_[1 + disk][nearOrFar]->Fill(dt);
+    }
+    if (knownDisk && dt >= michelDtMin_) {
+      hMichel_[disk][nearOrFar]->Fill(delayedEnergy);
+    }
+    if (knownDisk && dt >= dtNorm_) {
+      hNormalisation_[disk]->Fill(nearOrFar);
+    }
+  }
+
+  // printf to the terminal and to the summary file.
+  template <typename... Args> void MC2StoppedMuons::report(const char* format, Args... args) {
+    printf(format, args...);
+    if (summaryFile_) {
+      fprintf(summaryFile_, format, args...);
+    }
+  }
+
+  void MC2StoppedMuons::endJob() {
+    summaryFile_ = fopen(summaryFileName_.c_str(), "w");
+    report("MC2StoppedMuons: events %ld, crystals %ld, clusters %ld, prompt clusters in acceptance %ld\n",
+           nEvents_, nCrystals_, nClusters_, nPromptInAcceptance_);
+    report("cuts: minAmp %.0f ADC, clusGap %.0f ns, dt %.2f-%.1f us, tEdge %.1f us, near <= %.0f mm, far > %.0f mm\n",
+           minAmp_, clusterGap_, dtMin_, dtMax_, tEdge_, dNear_, dFar_);
+    fitLifetimes();
+    subtractAccidentals();
+    if (summaryFile_) {
+      fclose(summaryFile_);
+      summaryFile_ = nullptr;
+    }
+  }
+
+  // Lifetime: binned likelihood fit N0 exp(-t/tau) + B of the near-pair delay, all disks and per disk.
+  void MC2StoppedMuons::fitLifetimes() {
+    const char* selectionName[3] = {"all", "disk 0", "disk 1"};
+    for (int k = 0; k < 3; ++k) {
+      TH1F* hNear = hDelay_[k][kNear];
+      if (hNear->Integral() < 20) {
+        report("lifetime %s: too few near pairs (%.0f)\n", selectionName[k], hNear->Integral());
+        continue;
+      }
+      TF1 decay(Form("fexp%d", k), "[0]*exp(-x/[1])+[2]", fitMin_, fitMax_);
+      decay.SetParameters(std::max(1., hNear->GetBinContent(hNear->FindBin(fitMin_)) * 1.5), 2.2,
+                          std::max(0.1, hNear->GetBinContent(hNear->GetNbinsX())));
+      decay.SetParLimits(1, 0.1, 20.);
+      hNear->Fit(&decay, "LQR0");
+      report("lifetime %s: tau = %.3f +- %.3f us, N0 = %.1f +- %.1f per bin, B = %.2f +- %.2f per bin, "
+             "chi2/ndf = %.1f/%d, near pairs %.0f, far pairs %.0f\n",
+             selectionName[k], decay.GetParameter(1), decay.GetParError(1), decay.GetParameter(0),
+             decay.GetParError(0), decay.GetParameter(2), decay.GetParError(2), decay.GetChisquare(), decay.GetNDF(),
+             hNear->Integral(), hDelay_[k][kFar]->Integral());
+    }
+  }
+
+  // Michel spectra per disk: near - k far, with k = near/far for dt >= dtNorm (only accidentals there).
+  void MC2StoppedMuons::subtractAccidentals() {
+    for (int disk = 0; disk < 2; ++disk) {
+      const double nNear = hNormalisation_[disk]->GetBinContent(1);
+      const double nFar = hNormalisation_[disk]->GetBinContent(2);
+      const double k = nFar > 0 ? nNear / nFar : 0;
+      hMichelSubtracted_[disk]->Add(hMichel_[disk][kNear], hMichel_[disk][kFar], 1., -k);
+      report("Michel disk %d: near %.0f, far %.0f (delay > %.1f us), accidental scale k = %.3f "
+             "(near/far for delay > %.0f us: %.0f/%.0f); after subtraction %.0f pairs, mean %.1f MeV\n",
+             disk, hMichel_[disk][kNear]->Integral(), hMichel_[disk][kFar]->Integral(), michelDtMin_, k, dtNorm_,
+             nNear, nFar, hMichelSubtracted_[disk]->Integral(), hMichelSubtracted_[disk]->GetMean());
+    }
+  }
+
 }
+
 DEFINE_ART_MODULE(mu2e::MC2StoppedMuons)

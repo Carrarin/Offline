@@ -1,25 +1,80 @@
-// crv_calo_flatten.C -- EventNtuple (calo + CRV) -> two flat text tables for the coincidence analysis.
-//   <out>_crv.csv : ev, sector, pos x y z (detector coordinates, mm), time, timeStart, timeEnd, PEs, nHits, nLayers, angle, posCalc
-//   <out>_calo.csv: ev, crystalId, time, eDep, crystal x y z (detector coordinates, mm)   [only events with >= 1 CRV coincidence]
-// Usage: root -l -b -q 'Offline/MC2Reco/scripts/crv_calo_flatten.C("nts.root","out/prefix")'
+// crv_calo_flatten.C: EventNtuple (calorimeter + CRV) -> two flat csv tables for the coincidence analysis
+// (crv_calo_coinc.py, crv_calo_spatial.py).
+//
+// Usage (any ROOT: the branches are read by name, no EventNtuple dictionaries needed):
+//
+//   root -l -b -q 'Offline/MC2Reco/scripts/crv_calo_flatten.C("nts.root","out/prefix")'
+//
+// Arguments: in = EventNtuple file (tree nt/ntuple with crvcoincs, calohits, evtinfo); out = prefix of the csv files.
+//
+// Output (positions in detector coordinates, mm; times in ns):
+//   <out>_crv.csv : ev,sector,x,y,z,time,timeStart,timeEnd,PEs,nHits,nLayers,angle,posCalc
+//                   one row per CRV coincidence (sector = sectorType, posCalc = hitPosAndTimeCalculated)
+//   <out>_calo.csv: ev,crystal,time,eDep,x,y,z
+//                   one row per calorimeter hit (crystal = crystalId, x y z = crystal position), only in the events
+//                   with at least one CRV coincidence
+// Prints the number of events and of events with CRV coincidences.
+
 #include <TFile.h>
 #include <TTreeReader.h>
 #include <TTreeReaderArray.h>
 #include <TTreeReaderValue.h>
+
 #include <cstdio>
+
 void crv_calo_flatten(const char* in, const char* out) {
-  TFile f(in); TTreeReader r("nt/ntuple", &f);
-  TTreeReaderArray<int> cs(r, "crvcoincs.sectorType"); TTreeReaderArray<float> cx(r, "crvcoincs.pos.fCoordinates.fX"), cy(r, "crvcoincs.pos.fCoordinates.fY"), cz(r, "crvcoincs.pos.fCoordinates.fZ");
-  TTreeReaderArray<float> ct(r, "crvcoincs.time"), ct0(r, "crvcoincs.timeStart"), ct1(r, "crvcoincs.timeEnd"), cpe(r, "crvcoincs.PEs"), cang(r, "crvcoincs.angle");
-  TTreeReaderArray<int> cnh(r, "crvcoincs.nHits"), cnl(r, "crvcoincs.nLayers"); TTreeReaderArray<bool> cpc(r, "crvcoincs.hitPosAndTimeCalculated");
-  TTreeReaderArray<int> hid(r, "calohits.crystalId_"); TTreeReaderArray<float> ht(r, "calohits.time_"), he(r, "calohits.eDep_");
-  TTreeReaderArray<float> hx(r, "calohits.crystalPos_.fCoordinates.fX"), hy(r, "calohits.crystalPos_.fCoordinates.fY"), hz(r, "calohits.crystalPos_.fCoordinates.fZ");
-  TTreeReaderValue<int> evn(r, "evtinfo.event");
-  FILE* fc = fopen(Form("%s_crv.csv", out), "w"); FILE* fh = fopen(Form("%s_calo.csv", out), "w");
-  fprintf(fc, "ev,sector,x,y,z,time,timeStart,timeEnd,PEs,nHits,nLayers,angle,posCalc\n"); fprintf(fh, "ev,crystal,time,eDep,x,y,z\n");
-  long n = 0, nc = 0;
-  while (r.Next()) { ++n; if (cs.GetSize() == 0) continue; ++nc;
-    for (size_t i = 0; i < cs.GetSize(); ++i) fprintf(fc, "%d,%d,%.1f,%.1f,%.1f,%.3f,%.3f,%.3f,%.1f,%d,%d,%.3f,%d\n", *evn, cs[i], cx[i], cy[i], cz[i], ct[i], ct0[i], ct1[i], cpe[i], cnh[i], cnl[i], cang[i], (int)cpc[i]);
-    for (size_t i = 0; i < hid.GetSize(); ++i) fprintf(fh, "%d,%d,%.3f,%.3f,%.1f,%.1f,%.1f\n", *evn, hid[i], ht[i], he[i], hx[i], hy[i], hz[i]); }
-  fclose(fc); fclose(fh); printf("events %ld, with CRV coincidences %ld\n", n, nc);
+  TFile inputFile(in);
+  TTreeReader reader("nt/ntuple", &inputFile);
+
+  // CRV coincidences
+  TTreeReaderArray<int> crvSector(reader, "crvcoincs.sectorType");
+  TTreeReaderArray<float> crvX(reader, "crvcoincs.pos.fCoordinates.fX");
+  TTreeReaderArray<float> crvY(reader, "crvcoincs.pos.fCoordinates.fY");
+  TTreeReaderArray<float> crvZ(reader, "crvcoincs.pos.fCoordinates.fZ");
+  TTreeReaderArray<float> crvTime(reader, "crvcoincs.time");
+  TTreeReaderArray<float> crvTimeStart(reader, "crvcoincs.timeStart");
+  TTreeReaderArray<float> crvTimeEnd(reader, "crvcoincs.timeEnd");
+  TTreeReaderArray<float> crvPEs(reader, "crvcoincs.PEs");
+  TTreeReaderArray<float> crvAngle(reader, "crvcoincs.angle");
+  TTreeReaderArray<int> crvNHits(reader, "crvcoincs.nHits");
+  TTreeReaderArray<int> crvNLayers(reader, "crvcoincs.nLayers");
+  TTreeReaderArray<bool> crvPosCalculated(reader, "crvcoincs.hitPosAndTimeCalculated");
+
+  // calorimeter hits
+  TTreeReaderArray<int> caloCrystal(reader, "calohits.crystalId_");
+  TTreeReaderArray<float> caloTime(reader, "calohits.time_");
+  TTreeReaderArray<float> caloEDep(reader, "calohits.eDep_");
+  TTreeReaderArray<float> caloX(reader, "calohits.crystalPos_.fCoordinates.fX");
+  TTreeReaderArray<float> caloY(reader, "calohits.crystalPos_.fCoordinates.fY");
+  TTreeReaderArray<float> caloZ(reader, "calohits.crystalPos_.fCoordinates.fZ");
+
+  TTreeReaderValue<int> eventNumber(reader, "evtinfo.event");
+
+  FILE* crvCsv = fopen(Form("%s_crv.csv", out), "w");
+  FILE* caloCsv = fopen(Form("%s_calo.csv", out), "w");
+  fprintf(crvCsv, "ev,sector,x,y,z,time,timeStart,timeEnd,PEs,nHits,nLayers,angle,posCalc\n");
+  fprintf(caloCsv, "ev,crystal,time,eDep,x,y,z\n");
+
+  long nEvents = 0;
+  long nEventsWithCrv = 0;
+  while (reader.Next()) {
+    ++nEvents;
+    if (crvSector.GetSize() == 0) {
+      continue;
+    }
+    ++nEventsWithCrv;
+    for (size_t i = 0; i < crvSector.GetSize(); ++i) {
+      fprintf(crvCsv, "%d,%d,%.1f,%.1f,%.1f,%.3f,%.3f,%.3f,%.1f,%d,%d,%.3f,%d\n", *eventNumber, crvSector[i], crvX[i],
+              crvY[i], crvZ[i], crvTime[i], crvTimeStart[i], crvTimeEnd[i], crvPEs[i], crvNHits[i], crvNLayers[i],
+              crvAngle[i], (int)crvPosCalculated[i]);
+    }
+    for (size_t i = 0; i < caloCrystal.GetSize(); ++i) {
+      fprintf(caloCsv, "%d,%d,%.3f,%.3f,%.1f,%.1f,%.1f\n", *eventNumber, caloCrystal[i], caloTime[i], caloEDep[i],
+              caloX[i], caloY[i], caloZ[i]);
+    }
+  }
+
+  fclose(crvCsv);
+  fclose(caloCsv);
+  printf("events %ld, with CRV coincidences %ld\n", nEvents, nEventsWithCrv);
 }
