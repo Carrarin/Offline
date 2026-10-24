@@ -1,0 +1,18 @@
+// mu- almost at rest in a box around CsI crystal 355 (disk 0, middle of the ring, tracker x = 360.1, y = -377.3 mm, crystal centre z 2915) and its neighbours; Mu2e frame x - 3904, z + 24171.
+
+
+bool particleGun.do = true;
+double particleGun.czmin = -1.0;
+double particleGun.czmax =  1.0;
+double particleGun.phimin = 0.0;
+double particleGun.phimax = 6.283185307179586;
+double particleGun.tmin  =  1000.0;
+double particleGun.tmax  =  1000.0;
+vector<double> particleGun.point = {-3543.9, -377.3, 27086.0};
+vector<double> particleGun.halfLength = { 55., 55., 100. };
+double particleGun.pmin = 0.5;
+double particleGun.pmax = 1.0;
+int particleGun.id = 13;
+double particleGun.mean = -1;
+bool particleGun.doHistograms = false;
+bool particleGun.verbose = false;
