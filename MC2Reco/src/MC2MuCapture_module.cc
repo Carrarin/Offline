@@ -37,13 +37,22 @@
 //   cluster with E >= clusEmin MeV: dt (energy weighted), E, the part in the candidate crystal, number of crystals, inWf (the cluster
 //   time is inside the candidate waveform, i.e. its second pulse could have been seen). The threshold on E for the physics is
 //   eCut (counts printed at the end); THROUGH candidates (kind 1) give the same clusters without a stop: tail and accidentals.
-// Output (TFileService): tree "capture" (kind, crystal, disk, amp, t1, maxS, tau, A2, Q, ns, nMichel, michelDt, michelE, run/event),
+// Tags for the muonic X-rays (tree "capture", per candidate): the track (crystals, direction in the disk plane, crystal one pitch after
+//   the STOP), the nearest LYSO of lysoCrystals in the disk (distance, on the track or not, per SiPM the largest reco digi within
+//   |dt| < lysoWin of the candidate hit: energy, amplitude = energy / ADC2MeV, dt) and the delayed activity around the candidate
+//   (cluster deposits with dt in [delMin, delMax] ns and E >= delEmin MeV: number, summed energy, first dt): capture of a mu-.
+// Stop template (stopTemplate: true): a second template built in the same way from the STOP candidates with a Michel electron (mu+
+//   that really stopped, no capture: most STOP candidates do not stop, so their mean is a crossing-muon pulse; stopping muons have
+//   more slow light). Every candidate gets psd = chi2(stop template) / chi2(crossing template) of its first pulse on [-20, 200] ns;
+//   a STOP candidate with psd < 1 (useTs) is searched with the stop template, and injected with the same template (tree inject, kind 3).
+// Output (TFileService): tree "capture" (kind, crystal, disk, amp, t1, maxS, tau, A2, Q, ns, nMichel, michelDt, michelE, run/event, tags),
 //   tree "inject", the template.
 #include "art/Framework/Core/EDAnalyzer.h"
 #include "art/Framework/Core/ModuleMacros.h"
 #include "art/Framework/Principal/Event.h"
 #include "art_root_io/TFileService.h"
 #include "fhiclcpp/types/Atom.h"
+#include "fhiclcpp/types/Sequence.h"
 #include "Offline/GeometryService/inc/GeomHandle.hh"
 #include "Offline/CalorimeterGeom/inc/Calorimeter.hh"
 #include "Offline/CaloConditions/inc/CalCalib.hh"
@@ -71,7 +80,8 @@ namespace mu2e {
     };
     struct Wf { std::vector<float> y; double t0; float amp; double t50; };   // y normalised to the amplitude, t0 = time of sample 0 [ns]
     struct Dep { float dt, e; int cry; };   // a crystal deposit, dt from the hit of the candidate [ns], energy [MeV]
-    struct Cand { int kind, cry, disk, run, sub, evt; Wf w[2]; int nMichel = 0; float michelDt = -1, michelE = 0; double a2m[2] = {0, 0}; double tEnd = 0, stopE = 0; std::vector<Dep> nb; };
+    struct Cand { int kind, cry, disk, run, sub, evt; Wf w[2]; int nMichel = 0; float michelDt = -1, michelE = 0; double a2m[2] = {0, 0}; double tEnd = 0, stopE = 0; std::vector<Dep> nb;
+                  int nTrk = 0, cnext = -1, lyCry = -1, lyOnTrk = 0, delN = 0; float ux = 0, uy = 0, lyDist = -1, lyE[2] = {0, 0}, lyA[2] = {0, 0}, lyDt[2] = {-999, -999}, delE = 0, delDt = -1; };
     double t50of(const std::vector<float>& y) {
       const int im = int(std::max_element(y.begin(), y.end()) - y.begin());
       for (int q = im; q > 0; --q) if (y[q - 1] < 0.5 && y[q] >= 0.5) return (q - 1 + (0.5 - y[q - 1]) / (y[q] - y[q - 1])) * kNs;
@@ -88,11 +98,11 @@ namespace mu2e {
       Tmpl u; u.nbin = nbin; u.v.resize(nbin); for (int b = 0; b < nbin; ++b) { const double x = XLO + (b + 0.5) * BW + x50; u.v[b] = (x - XLO) / BW - 0.5 >= nbin - 1 ? 0 : t.at(x); }
       return u; }
     // first pulse: template fit on [lo, hi] around the time, scan +-5 ns around the 50 % crossing in 0.1 ns steps
-    void fit1(const Wf& w, const Tmpl& T, double lo, double hi, double& tb, double& Ab) {
+    double fit1(const Wf& w, const Tmpl& T, double lo, double hi, double& tb, double& Ab) {   // returns the chi2 (normalised units)
       auto chi = [&](double t, double& A) { double sty = 0, stt = 0; for (size_t q = 0; q < w.y.size(); ++q) { const double x = q * kNs - t; if (x < lo || x > hi) continue; const double m = T.at(x); sty += m * w.y[q]; stt += m * m; }
         A = stt > 0 ? sty / stt : 0; double c = 0; for (size_t q = 0; q < w.y.size(); ++q) { const double x = q * kNs - t; if (x < lo || x > hi) continue; const double r = w.y[q] - A * T.at(x); c += r * r; } return c; };
       double best = 1e30, A; tb = w.t50; for (double t = w.t50 - 5; t <= w.t50 + 5 + 1e-9; t += 0.1) { const double c = chi(t, A); if (c < best) { best = c; tb = t; } }
-      chi(tb, Ab); }
+      chi(tb, Ab); return best; }
   }
 
   class MC2MuCapture : public art::EDAnalyzer {
@@ -119,6 +129,7 @@ namespace mu2e {
         fhicl::Atom<int>    satADC        { Name("satADC"), Comment("saturation [raw ADC]"), 4090 };
         fhicl::Atom<double> xMax          { Name("xMax"), Comment("template range [ns]"), 1500. };
         fhicl::Atom<int>    nIterTemplate { Name("nIterTemplate"), Comment("template iterations"), 2 };
+        fhicl::Atom<bool>   stopTemplate  { Name("stopTemplate"), Comment("search (and inject) the STOP crystals with a template built from the STOP waveforms"), false };
         fhicl::Atom<double> dtMin         { Name("dtMin"), Comment("min delay of the second pulse [ns]"), 10. };
         fhicl::Atom<double> noiseADC      { Name("noiseADC"), Comment("noise per sample [ADC]"), 3.75 };
         fhicl::Atom<double> tailStart     { Name("tailStart"), Comment("start of the tail charge [ns after t1]"), 60. };
@@ -129,6 +140,7 @@ namespace mu2e {
         fhicl::Atom<int>    nExamples     { Name("nExamples"), Comment("waveforms saved per class (tree examples): STOP found x5, THROUGH found, STOP not found"), 24 };
         fhicl::Atom<double> exampleS      { Name("exampleS"), Comment("found = maxS > exampleS and A2 > exampleA2"), 5. };
         fhicl::Atom<double> exampleA2     { Name("exampleA2"), Comment("[ADC]"), 30. };
+        fhicl::Atom<double> sFirst        { Name("sFirst"), Comment("first second pulse: earliest delay with matched-filter significance above sFirst (branches tauF, A2F)"), 8. };
         fhicl::Atom<double> secS          { Name("secS"), Comment("cluster: second pulse of the candidate crystal if maxS > secS"), 5. };
         fhicl::Atom<double> clusR         { Name("clusR"), Comment("cluster: max distance of the other crystals from the candidate [mm]"), 80. };
         fhicl::Atom<double> pairDt        { Name("pairDt"), Comment("cluster: max |tL - tR| of the two SiPMs of a crystal [ns]"), 10. };
@@ -136,6 +148,11 @@ namespace mu2e {
         fhicl::Atom<double> clusDtMax     { Name("clusDtMax"), Comment("cluster: max dt from the stop [ns]"), 20000. };
         fhicl::Atom<double> clusEmin      { Name("clusEmin"), Comment("cluster: min energy written to the tree [MeV]"), 1. };
         fhicl::Atom<double> eCut          { Name("eCut"), Comment("cluster: energy threshold of the physics sample [MeV] (summary counts)"), 15. };
+        fhicl::Sequence<int> lyso         { Name("lysoCrystals"), Comment("crystal ids of the LYSO (CAPHRI)"), std::vector<int>{582, 609, 610, 637} };
+        fhicl::Atom<double> lysoWin       { Name("lysoWin"), Comment("LYSO deposits: max |dt| from the candidate hit [ns]"), 50. };
+        fhicl::Atom<double> delMin        { Name("delMin"), Comment("delayed activity: min dt [ns]"), 20. };
+        fhicl::Atom<double> delMax        { Name("delMax"), Comment("delayed activity: max dt [ns]"), 400. };
+        fhicl::Atom<double> delEmin       { Name("delEmin"), Comment("delayed activity: min deposit energy [MeV]"), 1. };
       };
       using Parameters = art::EDAnalyzer::Table<Config>;
       explicit MC2MuCapture(const Parameters& c);
@@ -148,19 +165,23 @@ namespace mu2e {
       void clusters(const Cand& c, double maxS, double tau, double A2);
       int cKind_, cCry_, cDisk_, cRun_, cSub_, cEvt_, cN_, cInWf_, cNMi_; float cDt_, cE_, cEstop_, cStopE_, cMaxS_; long nCut_[2] = {0, 0};
       art::InputTag trkTag_, digiTag_, hitTag_, rdTag_; double vetoD_, vetoLo_, vetoHi_, nbNear_, nbFarMin_, nbFarMax_, nbDtMin_, nbDtMax_; int minCry_, minThr_, maxThr_, minSamp_; double minAmp_; int sat_; double xMax_; int nIt_; double dtMin_, noise_, tail_, injMax_, injA2lo_, injA2hi_; int seed_; int nEx_; double exS_, exA2_;
-      ProditionsHandle<CalCalib> calibH_; double secS_, clusR_, pairDt_, clusGap_, clusDtMax_, clusEmin_, eCut_; TTree* tc_ = nullptr;
+      ProditionsHandle<CalCalib> calibH_; double sFirst_, secS_, clusR_, pairDt_, clusGap_, clusDtMax_, clusEmin_, eCut_; TTree* tc_ = nullptr;
       std::vector<Cand> cand_; long nThr_ = 0, nStopTried_ = 0, nStopNext_ = 0;
-      TTree *t_ = nullptr, *ti_ = nullptr, *te_ = nullptr, *td_ = nullptr; TH1D* hT_ = nullptr;
+      TTree *t_ = nullptr, *ti_ = nullptr, *te_ = nullptr, *td_ = nullptr; TH1D* hT_ = nullptr; TH1D* hTs_ = nullptr; bool stopT_ = false;
       int dKind_, dCry_, dDisk_, dNMi_, dRing_, dNbCry_, dSiPM_; float dDt_, dE_, dDist_, dStopE_;
       int exCls_; int nExSaved_[3] = {0, 0, 0}; std::vector<float> exY0_, exY1_; float exT0a_, exT0b_, exA1a_, exA1b_, exT1a_, exT1b_, exTref_;
       int kind_, cry_, disk_, run_, sub_, evt_, ns_, nMi_; float amp_, t1_, maxS_, tau_, A2_, Q_, injD_, injA2_, miDt_, miE_;
+      std::vector<int> lyso_; double lyWin_, delLo_, delHi_, delEmin_;
+      int tNTrk_, tCnext_, tLyCry_, tLyOnTrk_, tDelN_, tUseTs_ = 0; float tPsd_ = -1, tTauF_ = -1, tA2F_ = 0; mutable double tauF_ = -1, A2F_ = 0; float tUx_, tUy_, tStopE_, tLyDist_, tLyE_[2], tLyA_[2], tLyDt_[2], tDelE_, tDelDt_;
   };
 
   MC2MuCapture::MC2MuCapture(const Parameters& c) : art::EDAnalyzer(c), trkTag_(c().trkTag()), digiTag_(c().digiTag()), hitTag_(c().hitTag()), rdTag_(c().rdTag()),
     vetoD_(c().vetoDist()), vetoLo_(c().vetoMin()), vetoHi_(c().vetoMax()), nbNear_(c().nbNear()), nbFarMin_(c().nbFarMin()), nbFarMax_(c().nbFarMax()), nbDtMin_(c().nbDtMin()), nbDtMax_(c().nbDtMax()), minCry_(c().minCrystals()),
     minThr_(c().minThrough()), maxThr_(c().maxThrough()), minSamp_(c().minSamples()), minAmp_(c().minAmp()), sat_(c().satADC()), xMax_(c().xMax()), nIt_(c().nIterTemplate()),
     dtMin_(c().dtMin()), noise_(c().noiseADC()), tail_(c().tailStart()), injMax_(c().injMaxDelay()), injA2lo_(c().injMinA2()), injA2hi_(c().injMaxA2()), seed_(c().seed()), nEx_(c().nExamples()), exS_(c().exampleS()), exA2_(c().exampleA2()),
-    secS_(c().secS()), clusR_(c().clusR()), pairDt_(c().pairDt()), clusGap_(c().clusGap()), clusDtMax_(c().clusDtMax()), clusEmin_(c().clusEmin()), eCut_(c().eCut()) {
+    sFirst_(c().sFirst()), secS_(c().secS()), clusR_(c().clusR()), pairDt_(c().pairDt()), clusGap_(c().clusGap()), clusDtMax_(c().clusDtMax()), clusEmin_(c().clusEmin()), eCut_(c().eCut()),
+    lyso_(c().lyso()), lyWin_(c().lysoWin()), delLo_(c().delMin()), delHi_(c().delMax()), delEmin_(c().delEmin()) {
+    stopT_ = c().stopTemplate();
     consumes<MC2CaloCosmicTrackCollection>(trkTag_); consumes<CaloDigiCollection>(digiTag_); consumes<CaloHitCollection>(hitTag_); consumes<CaloRecoDigiCollection>(rdTag_);
   }
 
@@ -170,8 +191,13 @@ namespace mu2e {
     ti_ = tfs->make<TTree>("inject", "THROUGH crystals with an injected second pulse");
     for (TTree* t : {t_, ti_}) { t->Branch("kind", &kind_); t->Branch("cry", &cry_); t->Branch("disk", &disk_); t->Branch("run", &run_); t->Branch("subrun", &sub_); t->Branch("event", &evt_);
       t->Branch("amp", &amp_); t->Branch("t1", &t1_); t->Branch("maxS", &maxS_); t->Branch("tau", &tau_); t->Branch("A2", &A2_); t->Branch("Q", &Q_); t->Branch("ns", &ns_);
-      t->Branch("nMichel", &nMi_); t->Branch("michelDt", &miDt_); t->Branch("michelE", &miE_); }
+      t->Branch("nMichel", &nMi_); t->Branch("michelDt", &miDt_); t->Branch("michelE", &miE_); t->Branch("tauF", &tTauF_); t->Branch("A2F", &tA2F_); }
     ti_->Branch("injDelay", &injD_); ti_->Branch("injA2", &injA2_);
+    t_->Branch("nTrk", &tNTrk_); t_->Branch("ux", &tUx_); t_->Branch("uy", &tUy_); t_->Branch("cnext", &tCnext_); t_->Branch("stopE", &tStopE_);
+    t_->Branch("lyCry", &tLyCry_); t_->Branch("lyDist", &tLyDist_); t_->Branch("lyOnTrk", &tLyOnTrk_);
+    t_->Branch("lyE", tLyE_, "lyE[2]/F"); t_->Branch("lyA", tLyA_, "lyA[2]/F"); t_->Branch("lyDt", tLyDt_, "lyDt[2]/F");
+    t_->Branch("psd", &tPsd_); t_->Branch("useTs", &tUseTs_);
+    t_->Branch("delN", &tDelN_); t_->Branch("delE", &tDelE_); t_->Branch("delDt", &tDelDt_);
     td_ = tfs->make<TTree>("delayed", "single-SiPM deposits in the other crystals of the disk, dt from the candidate (ring 1 near, 2 far)");
     td_->Branch("kind", &dKind_); td_->Branch("cry", &dCry_); td_->Branch("disk", &dDisk_); td_->Branch("nMichel", &dNMi_); td_->Branch("ring", &dRing_);
     td_->Branch("nbCry", &dNbCry_); td_->Branch("sipm", &dSiPM_); td_->Branch("dt", &dDt_); td_->Branch("e", &dE_); td_->Branch("dist", &dDist_); td_->Branch("stopE", &dStopE_);
@@ -184,6 +210,7 @@ namespace mu2e {
     tc_->Branch("kind", &cKind_); tc_->Branch("cry", &cCry_); tc_->Branch("disk", &cDisk_); tc_->Branch("run", &cRun_); tc_->Branch("subrun", &cSub_); tc_->Branch("event", &cEvt_);
     tc_->Branch("dt", &cDt_); tc_->Branch("E", &cE_); tc_->Branch("Estop", &cEstop_); tc_->Branch("n", &cN_); tc_->Branch("inWf", &cInWf_);
     tc_->Branch("stopE", &cStopE_); tc_->Branch("maxS", &cMaxS_); tc_->Branch("nMichel", &cNMi_);
+    if (stopT_) hTs_ = tfs->make<TH1D>("htempl_stop", "template from the STOP crystals of the run;time - 50% crossing [ns];normalised", int((xMax_ - XLO) / BW), XLO, xMax_);
     hT_ = tfs->make<TH1D>("htempl", "template from the THROUGH crystals of the run;time - 50% crossing [ns];normalised", int((xMax_ - XLO) / BW), XLO, xMax_);
   }
 
@@ -211,7 +238,7 @@ namespace mu2e {
       std::vector<std::pair<double, size_t>> sk;
       for (size_t i = 0; i < tk.hits.size(); ++i) { const auto p = cal.mu2eToTracker(cal.crystal(tk.hits[i]->crystalID()).position()); sk.push_back({p.x() * ux + p.y() * uy, i}); }
       std::sort(sk.begin(), sk.end());
-      auto addCand = [&](int kind, size_t ih) {
+      auto addCand = [&](int kind, size_t ih, int cnx) {
         const auto& h = tk.hits[ih]; Cand c; c.kind = kind; c.cry = h->crystalID(); c.disk = cal.crystal(c.cry).diskID(); c.run = event.run(); c.sub = event.subRun(); c.evt = event.event();
         int got = 0;
         for (const auto& rd : h->recoCaloDigis()) { const int s = rd->SiPMID() % CaloConst::_nSiPMPerCrystal; if (waveform(*rd->caloDigiPtr(), c.w[s])) ++got; }
@@ -221,7 +248,7 @@ namespace mu2e {
         // mu+ veto: later deposits near the crystal
         const auto pc = cal.mu2eToTracker(cal.crystal(c.cry).position());
         for (const auto& ah : allHits) {
-          const double dt = ah.time() - h->time(); if (dt < vetoLo_ || dt > vetoHi_ || ah.crystalID() >= (int)cal.nCrystals()) continue;   // PIN diodes
+          const double dt = ah.time() - h->time(); if (dt < vetoLo_ || dt > vetoHi_ || ah.crystalID() >= (int)cal.nCrystals()) continue;
           const auto& ac = cal.crystal(ah.crystalID()); if ((int)ac.diskID() != c.disk) continue;
           const auto pa = cal.mu2eToTracker(ac.position()); if (std::hypot(pa.x() - pc.x(), pa.y() - pc.y()) > vetoD_) continue;
           ++c.nMichel; c.michelE += ah.energyDep(); if (c.michelDt < 0 || dt < c.michelDt) c.michelDt = dt; }
@@ -249,6 +276,19 @@ namespace mu2e {
               if (dt < dtMin_ || dt > clusDtMax_) continue;
               c.nb.push_back({float(dt), float(0.5 * (a->energyDep() + b->energyDep())), nc}); } } }
         c.stopE = h->energyDep();
+        // tags: track, nearest LYSO and its prompt deposits, delayed activity around the candidate
+        c.nTrk = tk.hits.size(); c.ux = ux; c.uy = uy; c.cnext = cnx;
+        for (int ly : lyso_) {
+          if (ly < 0 || ly >= (int)cal.nCrystals() || (int)cal.crystal(ly).diskID() != c.disk) continue;
+          const auto pl = cal.mu2eToTracker(cal.crystal(ly).position()); const float dl = std::hypot(pl.x() - pc.x(), pl.y() - pc.y());
+          if (c.lyCry < 0 || dl < c.lyDist) { c.lyCry = ly; c.lyDist = dl; } }
+        if (c.lyCry >= 0) { c.lyOnTrk = onTrk.count(c.lyCry) ? 1 : 0;
+          for (const auto& rd : rdigis) {
+            if (int(rd.SiPMID() / CaloConst::_nSiPMPerCrystal) != c.lyCry) continue;
+            const double dt = rd.time() - h->time(); if (std::abs(dt) > lyWin_) continue;
+            const int s = rd.SiPMID() % CaloConst::_nSiPMPerCrystal; if (rd.energyDep() <= c.lyE[s]) continue;
+            const double a2m = calib.ADC2MeV(rd.SiPMID()); c.lyE[s] = rd.energyDep(); c.lyA[s] = a2m > 0 ? rd.energyDep() / a2m : -1; c.lyDt[s] = dt; } }
+        for (const auto& n : c.nb) if (n.dt >= delLo_ && n.dt <= delHi_ && n.e >= delEmin_) { ++c.delN; c.delE += n.e; if (c.delDt < 0 || n.dt < c.delDt) c.delDt = n.dt; }
         cand_.push_back(std::move(c)); };
       if ((tk.type == 1 || tk.type == 2) && (int)sk.size() >= minCry_) {
         ++nStopTried_;
@@ -257,9 +297,9 @@ namespace mu2e {
         int cnext = -1; double db = 20.;
         for (unsigned k = 0; k < cal.nCrystals(); ++k) { if ((int)cal.crystal(k).diskID() != dsk) continue; const auto q = cal.mu2eToTracker(cal.crystal(k).position()); const double d = std::hypot(q.x() - px, q.y() - py); if (d < db) { db = d; cnext = k; } }
         bool onTrack = false; for (const auto& hp : tk.hits) if (hp->crystalID() == cnext) onTrack = true;
-        if (cnext >= 0 && !onTrack) { if (crysWithDigi.count(cnext)) ++nStopNext_; else addCand(0, il); }
+        if (cnext >= 0 && !onTrack) { if (crysWithDigi.count(cnext)) ++nStopNext_; else addCand(0, il, cnext); }
       }
-      if ((int)sk.size() >= minThr_ && nThr_ < maxThr_) { addCand(1, sk[sk.size() / 2].second); ++nThr_; }
+      if ((int)sk.size() >= minThr_ && nThr_ < maxThr_) { addCand(1, sk[sk.size() / 2].second, -1); ++nThr_; }
     }
   }
 
@@ -278,14 +318,15 @@ namespace mu2e {
       tt.push_back(t - tref); r.push_back(0.5 * v); }
     amp = 0.5 * (A1[0] * c.w[0].amp + A1[1] * c.w[1].amp); t1o = tref; ns = r.size();
     const double sig = 0.5 * std::hypot(noise_ / std::max(1e-3, A1[0] * c.w[0].amp), noise_ / std::max(1e-3, A1[1] * c.w[1].amp));   // per sample, normalised
-    maxS = -1e9; tau = -1; A2 = 0; Q = 0;
+    maxS = -1e9; tau = -1; A2 = 0; Q = 0; tauF_ = -1; A2F_ = 0;
     for (size_t i = 0; i < tt.size(); ++i) if (tt[i] >= tail_) Q += r[i];
     if (tt.empty()) return;
     const double tEnd = tt.back() - 30.;
     for (double d = dtMin_; d <= tEnd; d += 2.5) {
       double sr = 0, s2 = 0; for (size_t i = 0; i < tt.size(); ++i) { const double m = T.at(tt[i] - d); if (m == 0) continue; sr += r[i] * m; s2 += m * m; }
       if (s2 <= 0) continue;
-      const double S = sr / (sig * std::sqrt(s2)); if (S > maxS) { maxS = S; tau = d; A2 = sr / s2 * amp; } }
+      const double S = sr / (sig * std::sqrt(s2)); if (S > maxS) { maxS = S; tau = d; A2 = sr / s2 * amp; }
+      if (tauF_ < 0 && S > sFirst_) { tauF_ = d; A2F_ = sr / s2 * amp; } }
   }
 
   void MC2MuCapture::clusters(const Cand& c, double maxS, double tau, double A2) {
@@ -309,16 +350,31 @@ namespace mu2e {
     printf("MC2MuCapture: candidates %zu (STOP tried %ld, rejected because the next crystal has a digi %ld; THROUGH %ld); template from %zu waveforms\n",
            cand_.size(), nStopTried_, nStopNext_, nThr_, wt.size());
     if (wt.size() < 200) { printf("MC2MuCapture: too few THROUGH waveforms for the template, nothing done\n"); return; }
-    std::vector<double> ph; for (auto* w : wt) ph.push_back(std::fmod(w->t50, kNs)); std::vector<double> srt = ph; std::sort(srt.begin(), srt.end());
-    std::vector<double> ta(wt.size()); for (size_t i = 0; i < wt.size(); ++i) ta[i] = wt[i]->t50 - ph[i] + kNs * double(std::lower_bound(srt.begin(), srt.end(), ph[i]) - srt.begin()) / srt.size();
-    Tmpl T = build(wt, ta, nbin);
-    for (int it = 0; it < nIt_; ++it) { for (size_t i = 0; i < wt.size(); ++i) { double tb, A; fit1(*wt[i], T, -20, 40, tb, A); ta[i] = tb; } T = build(wt, ta, nbin); }
+    auto makeT = [&](const std::vector<const Wf*>& wv) {
+      std::vector<double> ph; for (auto* w : wv) ph.push_back(std::fmod(w->t50, kNs)); std::vector<double> srt = ph; std::sort(srt.begin(), srt.end());
+      std::vector<double> ta(wv.size()); for (size_t i = 0; i < wv.size(); ++i) ta[i] = wv[i]->t50 - ph[i] + kNs * double(std::lower_bound(srt.begin(), srt.end(), ph[i]) - srt.begin()) / srt.size();
+      Tmpl X = build(wv, ta, nbin);
+      for (int it = 0; it < nIt_; ++it) { for (size_t i = 0; i < wv.size(); ++i) { double tb, A; fit1(*wv[i], X, -20, 40, tb, A); ta[i] = tb; } X = build(wv, ta, nbin); }
+      return X; };
+    Tmpl T = makeT(wt);
     for (int b = 0; b < nbin; ++b) hT_->SetBinContent(b + 1, T.v[b]);
+    Tmpl Ts = T; bool haveTs = false;
+    if (stopT_) { std::vector<const Wf*> ws; for (auto& c : cand_) if (c.kind == 0 && c.nMichel > 0) for (int s = 0; s < 2; ++s) if (c.w[s].amp >= 300 && c.w[s].amp <= 1800) ws.push_back(&c.w[s]);   // mu+ stops: really stopped, no capture
+      if (ws.size() >= 200) { Ts = makeT(ws); haveTs = true; for (int b = 0; b < nbin; ++b) hTs_->SetBinContent(b + 1, Ts.v[b]); }
+      printf("MC2MuCapture: stop template from %zu waveforms of STOP with Michel%s\n", ws.size(), haveTs ? "" : " (too few, THROUGH template used)"); }
     TRandom3 rnd(seed_); long nStop = 0, nThr = 0;
     for (const auto& c : cand_) {
-      double amp, t1, mS, tau, A2, Q; int ns; double t1s[2], A1s[2]; detect(c, T, amp, t1, mS, tau, A2, Q, ns, t1s, A1s);
+      // pulse shape: chi2 of the two SiPMs on [-20, 200] ns with the stop template over the one with the crossing-muon template;
+      // a STOP candidate is searched with the template that describes its first pulse better
+      double chT = 0, chS = 0; if (haveTs) for (int s = 0; s < 2; ++s) { double tb, A; chT += fit1(c.w[s], T, -20, 200, tb, A); chS += fit1(c.w[s], Ts, -20, 200, tb, A); }
+      tPsd_ = (haveTs && chT > 0) ? float(chS / chT) : -1.f; tUseTs_ = (haveTs && c.kind == 0 && chS < chT) ? 1 : 0;
+      const Tmpl& Tc = tUseTs_ ? Ts : T;
+      double amp, t1, mS, tau, A2, Q; int ns; double t1s[2], A1s[2]; detect(c, Tc, amp, t1, mS, tau, A2, Q, ns, t1s, A1s); tTauF_ = float(tauF_); tA2F_ = float(A2F_);
       kind_ = c.kind; cry_ = c.cry; disk_ = c.disk; run_ = c.run; sub_ = c.sub; evt_ = c.evt; amp_ = amp; t1_ = t1; maxS_ = mS; tau_ = tau; A2_ = A2; Q_ = Q; ns_ = ns;
-      nMi_ = c.nMichel; miDt_ = c.michelDt; miE_ = c.michelE; t_->Fill();
+      nMi_ = c.nMichel; miDt_ = c.michelDt; miE_ = c.michelE;
+      tNTrk_ = c.nTrk; tUx_ = c.ux; tUy_ = c.uy; tCnext_ = c.cnext; tStopE_ = c.stopE; tLyCry_ = c.lyCry; tLyDist_ = c.lyDist; tLyOnTrk_ = c.lyOnTrk;
+      for (int s = 0; s < 2; ++s) { tLyE_[s] = c.lyE[s]; tLyA_[s] = c.lyA[s]; tLyDt_[s] = c.lyDt[s]; }
+      tDelN_ = c.delN; tDelE_ = c.delE; tDelDt_ = c.delDt; t_->Fill();
       clusters(c, mS, tau, A2);
       {   // examples
         const bool fnd = mS > exS_ && A2 > exA2_; const int cls = c.kind == 0 ? (fnd ? 0 : 2) : (fnd ? 1 : -1);
@@ -327,12 +383,12 @@ namespace mu2e {
           exY0_.assign(c.w[0].y.begin(), c.w[0].y.end()); for (auto& v : exY0_) v *= c.w[0].amp; exY1_.assign(c.w[1].y.begin(), c.w[1].y.end()); for (auto& v : exY1_) v *= c.w[1].amp;
           exT0a_ = c.w[0].t0; exT0b_ = c.w[1].t0; exA1a_ = A1s[0]; exA1b_ = A1s[1]; exT1a_ = t1s[0]; exT1b_ = t1s[1]; exTref_ = t1; te_->Fill(); } }
       (c.kind == 0 ? nStop : nThr)++;
-      if (c.kind == 1) {   // injection
+      if (c.kind == 1 || (haveTs && c.kind == 0)) {   // injection (THROUGH: kind 2; STOP: kind 3, with the template chosen above)
         Cand ci = c; const double d = rnd.Uniform(dtMin_, injMax_), a2 = rnd.Uniform(injA2lo_, injA2hi_);
-        for (int s = 0; s < 2; ++s) { double tb, A; fit1(c.w[s], T, -20, 40, tb, A);
+        for (int s = 0; s < 2; ++s) { double tb, A; fit1(c.w[s], Tc, -20, 40, tb, A);
           for (size_t q = 0; q < ci.w[s].y.size(); ++q) ci.w[s].y[q] += float(a2 / c.w[s].amp * T.at(q * kNs - tb - d)); }
-        detect(ci, T, amp, t1, mS, tau, A2, Q, ns);
-        kind_ = 2; amp_ = amp; t1_ = t1; maxS_ = mS; tau_ = tau; A2_ = A2; Q_ = Q; ns_ = ns; injD_ = d; injA2_ = a2; ti_->Fill();
+        detect(ci, Tc, amp, t1, mS, tau, A2, Q, ns);
+        tTauF_ = float(tauF_); tA2F_ = float(A2F_); kind_ = c.kind == 1 ? 2 : 3; amp_ = amp; t1_ = t1; maxS_ = mS; tau_ = tau; A2_ = A2; Q_ = Q; ns_ = ns; injD_ = d; injA2_ = a2; ti_->Fill();
       }
     }
     printf("MC2MuCapture: STOP crystals analysed %ld, THROUGH %ld (each also with an injected pulse)\n", nStop, nThr);
