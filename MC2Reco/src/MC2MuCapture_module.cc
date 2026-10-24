@@ -221,14 +221,14 @@ namespace mu2e {
         // mu+ veto: later deposits near the crystal
         const auto pc = cal.mu2eToTracker(cal.crystal(c.cry).position());
         for (const auto& ah : allHits) {
-          const double dt = ah.time() - h->time(); if (dt < vetoLo_ || dt > vetoHi_) continue;
+          const double dt = ah.time() - h->time(); if (dt < vetoLo_ || dt > vetoHi_ || ah.crystalID() >= (int)cal.nCrystals()) continue;   // PIN diodes
           const auto& ac = cal.crystal(ah.crystalID()); if ((int)ac.diskID() != c.disk) continue;
           const auto pa = cal.mu2eToTracker(ac.position()); if (std::hypot(pa.x() - pc.x(), pa.y() - pc.y()) > vetoD_) continue;
           ++c.nMichel; c.michelE += ah.energyDep(); if (c.michelDt < 0 || dt < c.michelDt) c.michelDt = dt; }
         // delayed deposits in the other crystals (written here: no waveform needed)
         std::set<int> onTrk; for (const auto& hp : tk.hits) onTrk.insert(hp->crystalID());
         for (const auto& rd : rdigis) {
-          const int nc = rd.SiPMID() / CaloConst::_nSiPMPerCrystal; if (nc == c.cry || onTrk.count(nc)) continue;
+          const int nc = rd.SiPMID() / CaloConst::_nSiPMPerCrystal; if (nc >= (int)cal.nCrystals() || nc == c.cry || onTrk.count(nc)) continue;   // PIN diodes
           const auto& ac = cal.crystal(nc); if ((int)ac.diskID() != c.disk) continue;
           const double dt = rd.time() - h->time(); if (dt < nbDtMin_ || dt > nbDtMax_) continue;
           const auto pa = cal.mu2eToTracker(ac.position()); const double dd = std::hypot(pa.x() - pc.x(), pa.y() - pc.y());
@@ -238,7 +238,7 @@ namespace mu2e {
         {   // crystal deposits for the delayed cluster: both SiPMs within pairDt
           std::map<int, std::vector<const CaloRecoDigi*>> bySiPM[2];
           for (const auto& rd : rdigis) {
-            const int nc = rd.SiPMID() / CaloConst::_nSiPMPerCrystal; if (nc == c.cry || onTrk.count(nc)) continue;
+            const int nc = rd.SiPMID() / CaloConst::_nSiPMPerCrystal; if (nc >= (int)cal.nCrystals() || nc == c.cry || onTrk.count(nc)) continue;
             const auto& ac = cal.crystal(nc); if ((int)ac.diskID() != c.disk) continue;
             const auto pa = cal.mu2eToTracker(ac.position()); if (std::hypot(pa.x() - pc.x(), pa.y() - pc.y()) > clusR_) continue;
             bySiPM[rd.SiPMID() % CaloConst::_nSiPMPerCrystal][nc].push_back(&rd); }
