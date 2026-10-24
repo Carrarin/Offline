@@ -4,7 +4,8 @@
 // Simulate digitization procedure and produce CaloDigis.
 // Digitization threshold: minPeakADC for all SiPMs, or one value per SiPM from thresholdFile (csv with a header row, column "roid" =
 // offline SiPM id and column thresholdColumn, ADC above the pedestal); SiPMs missing from the file keep minPeakADC.
-// End of a hit: the first sample below threshold, or with nSamplesBelowThr > 0 after that many consecutive samples below threshold
+// End of a hit: the first sample below threshold, or with nSamplesBelowThr > 0 after that many consecutive samples below threshold;
+// optional minimum and maximum hit length (minHitSamples, maxHitSamples) as in the ROC firmware
 // (as the readout firmware); the noise is then added over the same extended range.
 //
 //
@@ -73,6 +74,8 @@ namespace mu2e {
              fhicl::Atom<std::string>   thresholdFile        { Name("thresholdFile"),          Comment("csv with roid and the threshold per SiPM [ADC]; empty: minPeakADC for all"), "" };
              fhicl::Atom<std::string>   thresholdColumn      { Name("thresholdColumn"),        Comment("column of thresholdFile with the threshold"), "threshold_adc" };
              fhicl::Atom<unsigned>      nSamplesBelowThr     { Name("nSamplesBelowThr"),       Comment("consecutive samples below threshold that close a hit; 0: the hit closes at the first sample below threshold"), 0 };
+             fhicl::Atom<unsigned>      minHitSamples        { Name("minHitSamples"),          Comment("minimum hit length from its first sample [samples]; 0: off"), 0 };
+             fhicl::Atom<unsigned>      maxHitSamples        { Name("maxHitSamples"),          Comment("maximum hit length [samples], a longer hit is closed and a later peak opens a new one (ROC firmware: ~101); 0: off"), 0 };
              fhicl::Atom<int>           diagLevel            { Name("diagLevel"),              Comment("Diag Level"),0 };
          };
 
@@ -91,6 +94,8 @@ namespace mu2e {
             minPeakADC_        (config().minPeakADC()),
             minNoiseAmp_       (config().minNoiseAmp()),
             nBelowThr_         (config().nSamplesBelowThr()),
+            minHit_            (config().minHitSamples()),
+            maxHit_            (config().maxHitSamples()),
             engine_            (createEngine(art::ServiceHandle<SeedService>()->getSeed())),
             addNoise_          (config().addNoise()),
             noiseSampler_      (config().noiseCache(), engine_),
@@ -140,6 +145,8 @@ namespace mu2e {
        std::vector<int>        thr_;
        float                   minNoiseAmp_;
        unsigned                nBelowThr_;
+       unsigned                minHit_;
+       unsigned                maxHit_;
        CLHEP::HepRandomEngine& engine_;
        bool                    addNoise_;
        CaloNoiseUtil           noiseSampler_;
@@ -243,6 +250,7 @@ namespace mu2e {
            size_t sampleStop(timeSample);
            while (sampleStop < waveform.size() && waveform[sampleStop] > minNoiseAmp_) ++sampleStop;
            sampleStop = std::min(sampleStop + nBelowThr_, waveform.size());
+           if (minHit_ > 0) sampleStop = std::min(std::max(sampleStop, sampleStart + minHit_), waveform.size());
 
            hitStarts.push_back(sampleStart);
            hitStops.push_back(sampleStop);
@@ -357,6 +365,8 @@ namespace mu2e {
               unsigned nBelow(0);
               while (sampleStop < wf.size() && nBelow < nBelowThr_) {nBelow = (wf[sampleStop] < thr) ? nBelow+1 : 0; ++sampleStop;}
            }
+           if (minHit_ > 0) sampleStop = std::min(std::max(sampleStop, sampleStart + minHit_), wf.size());
+           if (maxHit_ > 0) sampleStop = std::min(sampleStop, sampleStart + maxHit_);
 
            starts.push_back(sampleStart);
            stops.push_back(sampleStop);
@@ -368,7 +378,7 @@ namespace mu2e {
        // Concatenate peaks and remove unused values (flag value to remove past wf.size() since the latter is a legitimate value)
        size_t iprev(0), icurrent(1);
        while (icurrent < starts.size()){
-           if (stops[iprev] >= starts[icurrent]) {stops[iprev]=stops[icurrent]; starts[icurrent]=stops[icurrent]=wf.size()+1;}
+           if (stops[iprev] >= starts[icurrent] && (maxHit_ == 0 || stops[icurrent] - starts[iprev] <= maxHit_)) {stops[iprev]=stops[icurrent]; starts[icurrent]=stops[icurrent]=wf.size()+1;}
            else                                  {iprev = icurrent;}
            ++icurrent;
        }
