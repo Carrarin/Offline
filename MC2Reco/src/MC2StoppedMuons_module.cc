@@ -10,7 +10,8 @@
 //
 // Definitions:
 //   Crystal  : CaloHit with both SiPMs (nSiPMs == 2) and the amplitude of each SiPM >= minAmp ADC counts (energy /
-//              CalCalib ADC2MeV);
+//              CalCalib ADC2MeV); laser PIN diodes (id >= number of crystals) and the crystals of excludedCrystals
+//              are left out;
 //                time      = hit time (our template, after the time offsets of the conditions);
 //                amplitude = mean of the two SiPM amplitudes;
 //                energy    = CaloHit energy (MeV, mean of the two SiPMs, from the energy table of the conditions);
@@ -61,6 +62,7 @@
 #include "art/Framework/Principal/Event.h"
 #include "art_root_io/TFileService.h"
 #include "fhiclcpp/types/Atom.h"
+#include "fhiclcpp/types/Sequence.h"
 
 #include "Offline/CaloConditions/inc/CalCalib.hh"
 #include "Offline/CalorimeterGeom/inc/Calorimeter.hh"
@@ -76,6 +78,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace mu2e {
@@ -111,6 +114,11 @@ namespace mu2e {
         fhicl::Atom<double> fitMax{Name("fitMax"), Comment("lifetime fit to [us]"), 20.};
         fhicl::Atom<std::string> summaryFile{Name("summaryFile"), Comment("text summary"),
             "stopped_muons_summary.txt"};
+
+        // Crystals left out of the analysis (e.g. the LYSO at operating voltage, whose intrinsic activity gives a
+        // continuous rate of delayed deposits); empty: all crystals
+        fhicl::Sequence<int> excludedCrystals{Name("excludedCrystals"), Comment("crystal ids left out"),
+            std::vector<int>{}};
       };
       using Parameters = art::EDAnalyzer::Table<Config>;
 
@@ -197,6 +205,7 @@ namespace mu2e {
       double fitMin_;
       double fitMax_;
       std::string summaryFileName_;
+      std::set<int> excludedCrystals_;
 
       // Output
       TTree* pairTree_ = nullptr;
@@ -231,6 +240,8 @@ namespace mu2e {
     fitMax_(config().fitMax()),
     summaryFileName_(config().summaryFile())
   {
+    const auto excluded = config().excludedCrystals();   // returned by value: one copy for begin and end
+    excludedCrystals_.insert(excluded.begin(), excluded.end());
     consumes<CaloHitCollection>(hitTag_);
   }
 
@@ -344,6 +355,12 @@ namespace mu2e {
     std::vector<CrystalHit> crystals;
     for (const auto& hit : hits) {
       if (hit.nSiPMs() < 2) {
+        continue;
+      }
+      if (hit.crystalID() >= (int)calorimeter.nCrystals()) {   // laser PIN diodes: not crystals
+        continue;
+      }
+      if (excludedCrystals_.count(hit.crystalID())) {
         continue;
       }
       double meanAmplitude;
