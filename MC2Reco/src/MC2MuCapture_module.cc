@@ -433,6 +433,12 @@ namespace mu2e {
         fhicl::Atom<double> delMin{Name("delMin"), Comment("delayed activity: min dt [ns]"), 20.};
         fhicl::Atom<double> delMax{Name("delMax"), Comment("delayed activity: max dt [ns]"), 400.};
         fhicl::Atom<double> delEmin{Name("delEmin"), Comment("delayed activity: min deposit energy [MeV]"), 1.};
+
+        // Crystals left out of the analysis (e.g. the LYSO at operating voltage, whose intrinsic activity gives a
+        // continuous rate of deposits): never a candidate, never in the mu+ veto, the delayed deposits or the
+        // delayed clusters (the LYSO tag above still reads them); empty: all crystals
+        fhicl::Sequence<int> excludedCrystals{Name("excludedCrystals"), Comment("crystal ids left out"),
+            std::vector<int>{}};
       };
 
       using Parameters = art::EDAnalyzer::Table<Config>;
@@ -508,6 +514,7 @@ namespace mu2e {
       double secS_, clusR_, pairDt_, clusGap_, clusDtMax_, clusEmin_, eCut_;
       std::vector<int> lysoCrystals_;
       double lysoWin_, delMin_, delMax_, delEmin_;
+      std::set<int> excludedCrystals_;
 
       // State
       std::vector<Candidate> candidates_;
@@ -595,6 +602,8 @@ namespace mu2e {
     delMax_(config().delMax()),
     delEmin_(config().delEmin())
   {
+    const auto excluded = config().excludedCrystals();   // returned by value: one copy for begin and end
+    excludedCrystals_.insert(excluded.begin(), excluded.end());
     consumes<MC2CaloCosmicTrackCollection>(trackTag_);
     consumes<CaloDigiCollection>(digiTag_);
     consumes<CaloHitCollection>(hitTag_);
@@ -885,6 +894,9 @@ namespace mu2e {
                                   int kind, size_t hitIndex, int cnext) {
     const Calorimeter& cal = data.cal;
     const auto& hit = track.hits[hitIndex];
+    if (excludedCrystals_.count(hit->crystalID())) {
+      return;
+    }
     Candidate c;
     c.kind = kind;
     c.cry = hit->crystalID();
@@ -932,6 +944,9 @@ namespace mu2e {
       if (dt < vetoMin_ || dt > vetoMax_ || other.crystalID() >= (int)cal.nCrystals()) {
         continue;
       }
+      if (excludedCrystals_.count(other.crystalID())) {
+        continue;
+      }
       const auto& otherCrystal = cal.crystal(other.crystalID());
       if ((int)otherCrystal.diskID() != c.disk) {
         continue;
@@ -957,6 +972,9 @@ namespace mu2e {
     for (const auto& recoDigi : data.recoDigis) {
       const int crystal = recoDigi.SiPMID() / CaloConst::_nSiPMPerCrystal;
       if (crystal >= (int)cal.nCrystals() || crystal == c.cry || onTrack.count(crystal)) {
+        continue;
+      }
+      if (excludedCrystals_.count(crystal)) {
         continue;
       }
       const auto& otherCrystal = cal.crystal(crystal);
@@ -998,6 +1016,9 @@ namespace mu2e {
     for (const auto& recoDigi : data.recoDigis) {
       const int crystal = recoDigi.SiPMID() / CaloConst::_nSiPMPerCrystal;
       if (crystal >= (int)cal.nCrystals() || crystal == c.cry || onTrack.count(crystal)) {
+        continue;
+      }
+      if (excludedCrystals_.count(crystal)) {
         continue;
       }
       const auto& otherCrystal = cal.crystal(crystal);
