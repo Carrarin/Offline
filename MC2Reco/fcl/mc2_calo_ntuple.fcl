@@ -1,0 +1,14 @@
+# EventNtuple of a calorimeter-only cosmic run with the calibration tables (mc2pass1_ntuple.fcl + conditions + hall geometry):
+# calorimeter reco digis and hits of the Offline reconstruction (ntOffline) and of the MC2 reconstruction (ntMC2), art output
+# with the reco digis and hits. No clusters: the Offline clustering (CaloProtoClusterMaker) crashes on the hits of the laser
+# PIN diodes (crystal id >= 1348), read out in the KPP-era runs.
+# Conditions: add the set of the run, e.g.
+#   services.DbService.textFile : [ "conditions/sets/kpp_calo_v001.txt" ]
+# Usage: mu2e -c <this fcl + set> -s <raw.art> -T <ntuple.root> -o <reco.art>
+#include "Offline/MC2Reco/fcl/mc2pass1_ntuple.fcl"
+services.GeometryService.inputFile : "Offline/MC2Reco/data/geom/geom_extracted_mc2kpp.txt"
+services.ProditionsService.calCalib.useDb : true
+physics.producers.MC2CaloRecoDigiMaker.useCalCalibTimeOffset : true
+physics.reco : [ CaloDigis, CaloRecoDigiMaker, CaloHitMaker, MC2CaloRecoDigiMaker, MC2CaloHitMaker ]
+physics.analyzers.ntOffline.calo.fillClusters : false
+physics.analyzers.ntMC2.calo.fillClusters : false

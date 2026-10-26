@@ -1,0 +1,12 @@
+# Calorimeter physics on raw cosmic files of the KPP-era runs (combined or calorimeter-only, hall geometry): MC2 chain of
+# kpp_combined.fcl (calorimeter path only) + MC2MuCapture (mu- capture tags, second pulse, muonic Kalpha neighbours) +
+# MC2StoppedMuons (delayed coincidences, mu+ lifetime, Michel spectra). No art output.
+# Conditions: add the set of the run, e.g.
+#   services.DbService.textFile : [ @sequence::services.DbService.textFile, "conditions/sets/kpp_calo_v001.txt" ]
+# LYSO (CAPHRI 582, 609, 610, 637): from run 125490 at their operating voltage, their intrinsic activity (Lu-176) fills the
+# delayed windows; they are left out of the analyses here (the reconstruction keeps them). For runs with the LYSO off set
+#   physics.analyzers.capture.excludedCrystals : []   and   physics.analyzers.stopped.excludedCrystals : []
+#include "Offline/MC2Reco/fcl/kpp/kpp_capture.fcl"
+physics.analyzers.capture.excludedCrystals : [ 582, 609, 610, 637 ]
+physics.analyzers.stopped : { @table::MC2Reco.MC2StoppedMuons excludedCrystals : [ 582, 609, 610, 637 ] }
+physics.ana : [ capture, stopped ]
